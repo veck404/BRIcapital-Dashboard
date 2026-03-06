@@ -437,6 +437,23 @@ const mockHourlyUsageHistory = buildMockHourlyUsageHistory();
 const mockDailyHistory = aggregateMockUsageHistory(mockHourlyUsageHistory, { interval: "daily" });
 
 const todayDateKey = toDateKey(new Date());
+const mockIntradayUsageHistory: UsageOverTimePoint[] = [];
+mockHourlyUsageHistory.forEach((row) => {
+  const timestamp = new Date(row.timestamp);
+  if (Number.isNaN(timestamp.getTime())) {
+    return;
+  }
+
+  if (toDateKey(timestamp) !== todayDateKey) {
+    return;
+  }
+
+  mockIntradayUsageHistory.push({
+    time: `${pad2(timestamp.getHours())}:${pad2(timestamp.getMinutes())}`,
+    bandwidthGb: Number(row.bandwidthGb.toFixed(3)),
+  });
+});
+
 const mockTotalBandwidthTodayGb = Number(
   mockHourlyUsageHistory
     .reduce((sum, row) => {
@@ -446,7 +463,8 @@ const mockTotalBandwidthTodayGb = Number(
     .toFixed(3),
 );
 
-const usageOverTime: UsageOverTimePoint[] = mockDailyHistory.points;
+const usageOverTime: UsageOverTimePoint[] =
+  mockIntradayUsageHistory.length > 0 ? mockIntradayUsageHistory : mockDailyHistory.points;
 
 const networkPayload: NetworkAnalytics = {
   topDevices: [...devices]

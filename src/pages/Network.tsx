@@ -14,10 +14,11 @@ import {
   type NetworkUsageHistoryResponse,
 } from "../services/api";
 
-const intervalOptions: { value: BandwidthHistoryInterval; label: string }[] = [
+type NetworkInterval = "today" | "daily" | "custom";
+
+const intervalOptions: { value: NetworkInterval; label: string }[] = [
+  { value: "today", label: "Today" },
   { value: "daily", label: "Daily" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
   { value: "custom", label: "Custom" },
 ];
 
@@ -26,6 +27,20 @@ const toInputDate = (value: Date) => {
   const month = `${value.getMonth() + 1}`.padStart(2, "0");
   const day = `${value.getDate()}`.padStart(2, "0");
   return `${year}-${month}-${day}`;
+};
+
+const filterBusinessHours = (
+  points: Array<{ time: string; bandwidthGb: number }>,
+) => {
+  return points.filter((point) => {
+    const timeStr = point.time.toString().trim();
+    const timeParts = timeStr.split(":");
+    if (timeParts.length >= 2) {
+      const hour = parseInt(timeParts[0], 10);
+      return Number.isFinite(hour) && hour >= 8 && hour <= 17;
+    }
+    return true;
+  });
 };
 
 const prettyDate = (value: string) => {
@@ -47,7 +62,7 @@ interface NetworkState {
   historyLoading: boolean;
   error: string | null;
   historyError: string | null;
-  interval: BandwidthHistoryInterval;
+  interval: NetworkInterval;
   customStart: string;
   customEnd: string;
   streamStatus: "disabled" | "connecting" | "live" | "offline";
@@ -61,7 +76,7 @@ type NetworkAction =
   | { type: "SET_HISTORY_LOADING"; payload: boolean }
   | { type: "SET_ERROR"; payload: string | null }
   | { type: "SET_HISTORY_ERROR"; payload: string | null }
-  | { type: "SET_INTERVAL"; payload: BandwidthHistoryInterval }
+  | { type: "SET_INTERVAL"; payload: NetworkInterval }
   | { type: "SET_CUSTOM_START"; payload: string }
   | { type: "SET_CUSTOM_END"; payload: string }
   | { type: "SET_STREAM_STATUS"; payload: NetworkState["streamStatus"] }
@@ -75,7 +90,7 @@ const initialState = (collectorEnabled: boolean): NetworkState => ({
   historyLoading: true,
   error: null,
   historyError: null,
-  interval: "daily",
+  interval: "today",
   customStart: (() => {
     const base = new Date();
     base.setDate(base.getDate() - 13);
@@ -172,6 +187,11 @@ const Network = () => {
       dispatch({ type: "SET_HISTORY_ERROR", payload: null });
 
       try {
+        if (state.interval === "today") {
+          dispatch({ type: "SET_HISTORY_LOADING", payload: false });
+          return;
+        }
+
         if (isCustomDateFuture && state.interval === "custom") {
           dispatch({
             type: "SET_HISTORY_ERROR",
@@ -190,8 +210,10 @@ const Network = () => {
           return;
         }
 
+        const interval: BandwidthHistoryInterval =
+          state.interval === "daily" ? "daily" : "custom";
         const payload = await fetchNetworkUsageHistory({
-          interval: state.interval,
+          interval,
           ...(state.interval === "custom"
             ? { start: state.customStart, end: state.customEnd }
             : {}),
@@ -297,17 +319,17 @@ const Network = () => {
   }
 
   const usagePoints =
-    state.usageHistory?.points ?? state.networkData.usageOverTime;
+    state.interval === "today"
+      ? filterBusinessHours(state.networkData.usageOverTime)
+      : (state.usageHistory?.points ?? []);
   const usageTitle =
-    state.interval === "weekly"
-      ? "Bandwidth Usage by Week"
-      : state.interval === "monthly"
-        ? "Bandwidth Usage by Month"
-        : state.interval === "custom"
-          ? "Bandwidth Usage (Custom Interval)"
-          : "Bandwidth Usage by Day";
+    state.interval === "custom"
+      ? "Bandwidth Usage (Custom Interval)"
+      : state.interval === "daily"
+        ? "Daily Bandwidth Usage (Last 30 Days)"
+        : "Bandwidth Usage Today (8:00 AM - 5:00 PM)";
 
-  const usageRangeLabel = state.usageHistory
+  const usageRangeLabel = state.interval !== "today" && state.usageHistory
     ? `${prettyDate(state.usageHistory.rangeStart)} to ${prettyDate(state.usageHistory.rangeEnd)}`
     : undefined;
 
