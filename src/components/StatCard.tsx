@@ -23,19 +23,31 @@ const StatCard = ({
   tone = "slate",
 }: StatCardProps) => {
   return (
-    <article className="card-surface group p-5 transition duration-200 hover:-translate-y-0.5 hover:shadow-md">
+    <article
+      className="card-surface group p-5 transition duration-200 hover:-translate-y-0.5 hover:shadow-md focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-sky-400"
+      role="region"
+      aria-label={`${label}: ${value}`}
+    >
       <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm text-slate-500">{label}</p>
+        <div className="flex-1">
+          <p className="text-sm text-slate-500" id={`stat-label-${label}`}>
+            {label}
+          </p>
           <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
             {value}
           </p>
           {helperText ? (
-            <p className="mt-2 text-xs font-medium text-slate-500">{helperText}</p>
+            <p className="mt-2 text-xs font-medium text-slate-500" role="note">
+              {helperText}
+            </p>
           ) : null}
         </div>
-        <span className={`rounded-xl p-2.5 ${toneClasses[tone]}`}>
-          <Icon size={20} />
+        <span
+          className={`rounded-xl p-2.5 ${toneClasses[tone]} flex-shrink-0`}
+          role="img"
+          aria-label={label}
+        >
+          <Icon size={20} aria-hidden="true" />
         </span>
       </div>
     </article>

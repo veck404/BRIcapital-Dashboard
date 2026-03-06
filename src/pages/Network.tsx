@@ -1,5 +1,5 @@
-import { Activity } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Activity, RotateCcw } from "lucide-react";
+import { useCallback, useEffect, useReducer } from "react";
 import DeviceTable from "../components/DeviceTable";
 import NetworkUsageChart from "../components/NetworkUsageChart";
 import StatCard from "../components/StatCard";
@@ -40,74 +40,196 @@ const prettyDate = (value: string) => {
   }).format(parsed);
 };
 
-const Network = () => {
-  const collectorEnabled = isCollectorEnabled();
-  const [networkData, setNetworkData] = useState<NetworkAnalytics | null>(null);
-  const [usageHistory, setUsageHistory] = useState<NetworkUsageHistoryResponse | null>(
-    null,
-  );
-  const [networkLoading, setNetworkLoading] = useState(true);
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [interval, setInterval] = useState<BandwidthHistoryInterval>("daily");
-  const [customStart, setCustomStart] = useState(() => {
+interface NetworkState {
+  networkData: NetworkAnalytics | null;
+  usageHistory: NetworkUsageHistoryResponse | null;
+  networkLoading: boolean;
+  historyLoading: boolean;
+  error: string | null;
+  historyError: string | null;
+  interval: BandwidthHistoryInterval;
+  customStart: string;
+  customEnd: string;
+  streamStatus: "disabled" | "connecting" | "live" | "offline";
+  retryCount: number;
+}
+
+type NetworkAction =
+  | { type: "SET_NETWORK_DATA"; payload: NetworkAnalytics }
+  | { type: "SET_USAGE_HISTORY"; payload: NetworkUsageHistoryResponse }
+  | { type: "SET_NETWORK_LOADING"; payload: boolean }
+  | { type: "SET_HISTORY_LOADING"; payload: boolean }
+  | { type: "SET_ERROR"; payload: string | null }
+  | { type: "SET_HISTORY_ERROR"; payload: string | null }
+  | { type: "SET_INTERVAL"; payload: BandwidthHistoryInterval }
+  | { type: "SET_CUSTOM_START"; payload: string }
+  | { type: "SET_CUSTOM_END"; payload: string }
+  | { type: "SET_STREAM_STATUS"; payload: NetworkState["streamStatus"] }
+  | { type: "INCREMENT_RETRY_COUNT" }
+  | { type: "RESET_RETRY_COUNT" };
+
+const initialState = (collectorEnabled: boolean): NetworkState => ({
+  networkData: null,
+  usageHistory: null,
+  networkLoading: true,
+  historyLoading: true,
+  error: null,
+  historyError: null,
+  interval: "daily",
+  customStart: (() => {
     const base = new Date();
     base.setDate(base.getDate() - 13);
     return toInputDate(base);
-  });
-  const [customEnd, setCustomEnd] = useState(() => toInputDate(new Date()));
-  const [streamStatus, setStreamStatus] = useState<
-    "disabled" | "connecting" | "live" | "offline"
-  >(collectorEnabled ? "connecting" : "disabled");
+  })(),
+  customEnd: toInputDate(new Date()),
+  streamStatus: collectorEnabled ? "connecting" : "disabled",
+  retryCount: 0,
+});
 
-  useEffect(() => {
-    const loadData = async () => {
+const networkReducer = (
+  state: NetworkState,
+  action: NetworkAction,
+): NetworkState => {
+  switch (action.type) {
+    case "SET_NETWORK_DATA":
+      return { ...state, networkData: action.payload };
+    case "SET_USAGE_HISTORY":
+      return { ...state, usageHistory: action.payload };
+    case "SET_NETWORK_LOADING":
+      return { ...state, networkLoading: action.payload };
+    case "SET_HISTORY_LOADING":
+      return { ...state, historyLoading: action.payload };
+    case "SET_ERROR":
+      return { ...state, error: action.payload };
+    case "SET_HISTORY_ERROR":
+      return { ...state, historyError: action.payload };
+    case "SET_INTERVAL":
+      return { ...state, interval: action.payload, historyError: null };
+    case "SET_CUSTOM_START":
+      return { ...state, customStart: action.payload };
+    case "SET_CUSTOM_END":
+      return { ...state, customEnd: action.payload };
+    case "SET_STREAM_STATUS":
+      return { ...state, streamStatus: action.payload };
+    case "INCREMENT_RETRY_COUNT":
+      return { ...state, retryCount: state.retryCount + 1 };
+    case "RESET_RETRY_COUNT":
+      return { ...state, retryCount: 0 };
+    default:
+      return state;
+  }
+};
+
+const Network = () => {
+  const collectorEnabled = isCollectorEnabled();
+  const [state, dispatch] = useReducer(
+    networkReducer,
+    collectorEnabled,
+    initialState,
+  );
+
+  // Validate custom date range
+  const isDateRangeValid = state.customStart < state.customEnd;
+  const today = toInputDate(new Date());
+  const isCustomDateFuture =
+    state.interval === "custom" && state.customEnd > today;
+
+  const loadData = useCallback(
+    async (retrying = false) => {
       try {
-        setNetworkLoading(true);
-        setError(null);
+        if (!retrying) {
+          dispatch({ type: "SET_NETWORK_LOADING", payload: true });
+        }
+        dispatch({ type: "SET_ERROR", payload: null });
         const response = await fetchNetworkAnalytics();
-        setNetworkData(response);
-      } catch {
-        setError("Failed to load network analytics.");
+        dispatch({ type: "SET_NETWORK_DATA", payload: response });
+        dispatch({ type: "RESET_RETRY_COUNT" });
+      } catch (err) {
+        dispatch({
+          type: "SET_ERROR",
+          payload:
+            "Failed to load network analytics. " +
+            (state.retryCount < 3
+              ? "Retrying automatically..."
+              : "Please try again."),
+        });
+        if (state.retryCount < 3) {
+          dispatch({ type: "INCREMENT_RETRY_COUNT" });
+          setTimeout(() => loadData(true), 2000 * (state.retryCount + 1));
+        }
       } finally {
-        setNetworkLoading(false);
+        dispatch({ type: "SET_NETWORK_LOADING", payload: false });
       }
-    };
-
-    void loadData();
-  }, []);
+    },
+    [state.retryCount],
+  );
 
   const loadHistory = useCallback(
     async (showLoading: boolean) => {
       if (showLoading) {
-        setHistoryLoading(true);
+        dispatch({ type: "SET_HISTORY_LOADING", payload: true });
       }
-      setHistoryError(null);
+      dispatch({ type: "SET_HISTORY_ERROR", payload: null });
 
       try {
+        if (isCustomDateFuture && state.interval === "custom") {
+          dispatch({
+            type: "SET_HISTORY_ERROR",
+            payload: "End date cannot be in the future.",
+          });
+          dispatch({ type: "SET_HISTORY_LOADING", payload: false });
+          return;
+        }
+
+        if (!isDateRangeValid && state.interval === "custom") {
+          dispatch({
+            type: "SET_HISTORY_ERROR",
+            payload: "Start date must be before end date.",
+          });
+          dispatch({ type: "SET_HISTORY_LOADING", payload: false });
+          return;
+        }
+
         const payload = await fetchNetworkUsageHistory({
-          interval,
-          ...(interval === "custom" ? { start: customStart, end: customEnd } : {}),
+          interval: state.interval,
+          ...(state.interval === "custom"
+            ? { start: state.customStart, end: state.customEnd }
+            : {}),
         });
-        setUsageHistory(payload);
-      } catch {
-        setHistoryError("Unable to load usage history for the selected interval.");
+        dispatch({ type: "SET_USAGE_HISTORY", payload });
+      } catch (err) {
+        dispatch({
+          type: "SET_HISTORY_ERROR",
+          payload: "Unable to load usage history for the selected interval.",
+        });
       } finally {
-        setHistoryLoading(false);
+        dispatch({ type: "SET_HISTORY_LOADING", payload: false });
       }
     },
-    [customEnd, customStart, interval],
+    [
+      state.customEnd,
+      state.customStart,
+      state.interval,
+      isDateRangeValid,
+      isCustomDateFuture,
+    ],
   );
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   useEffect(() => {
     void loadHistory(true);
   }, [loadHistory]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      void loadHistory(false);
-    }, collectorEnabled ? 30000 : 60000);
+    const timer = window.setInterval(
+      () => {
+        void loadHistory(false);
+      },
+      collectorEnabled ? 30000 : 60000,
+    );
 
     return () => {
       window.clearInterval(timer);
@@ -121,79 +243,117 @@ const Network = () => {
 
     const unsubscribe = subscribeToRouterStream(
       (snapshot) => {
-        setStreamStatus(snapshot.connected ? "live" : "offline");
+        dispatch({
+          type: "SET_STREAM_STATUS",
+          payload: snapshot.connected ? "live" : "offline",
+        });
         if (snapshot.network) {
-          setNetworkData(snapshot.network);
+          dispatch({ type: "SET_NETWORK_DATA", payload: snapshot.network });
         }
       },
       () => {
-        setStreamStatus("offline");
+        dispatch({ type: "SET_STREAM_STATUS", payload: "offline" });
       },
     );
 
     return unsubscribe;
   }, [collectorEnabled]);
 
-  if ((networkLoading && !networkData) || (historyLoading && !usageHistory)) {
+  if (
+    (state.networkLoading && !state.networkData) ||
+    (state.historyLoading && !state.usageHistory)
+  ) {
     return (
-      <section className="space-y-6">
+      <section className="space-y-6" aria-label="Network analytics loading">
         <div className="card-surface h-32 animate-pulse bg-slate-100/80" />
-        <div className="card-surface h-96 animate-pulse bg-slate-100/80" />
-        <div className="card-surface h-96 animate-pulse bg-slate-100/80" />
+        <div className="space-y-4">
+          <div className="card-surface h-16 animate-pulse bg-slate-100/80" />
+          <div className="card-surface h-96 animate-pulse bg-slate-100/80" />
+          <div className="card-surface h-96 animate-pulse bg-slate-100/80" />
+        </div>
       </section>
     );
   }
 
-  if (error || !networkData) {
+  if (state.error || !state.networkData) {
     return (
-      <section className="card-surface p-6">
-        <p className="text-sm font-medium text-rose-600">
-          {error ?? "Unable to render network analytics."}
-        </p>
+      <section className="card-surface p-6" role="alert">
+        <div className="flex flex-col gap-4">
+          <p className="text-sm font-medium text-rose-600">
+            {state.error ?? "Unable to render network analytics."}
+          </p>
+          <button
+            type="button"
+            onClick={() => loadData()}
+            className="inline-flex items-center gap-2 rounded-lg bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
+            aria-label="Retry loading network analytics"
+          >
+            <RotateCcw size={16} />
+            Retry
+          </button>
+        </div>
       </section>
     );
   }
 
-  const usagePoints = usageHistory?.points ?? networkData.usageOverTime;
+  const usagePoints =
+    state.usageHistory?.points ?? state.networkData.usageOverTime;
   const usageTitle =
-    interval === "weekly"
+    state.interval === "weekly"
       ? "Bandwidth Usage by Week"
-      : interval === "monthly"
+      : state.interval === "monthly"
         ? "Bandwidth Usage by Month"
-        : interval === "custom"
+        : state.interval === "custom"
           ? "Bandwidth Usage (Custom Interval)"
           : "Bandwidth Usage by Day";
 
-  const usageRangeLabel = usageHistory
-    ? `${prettyDate(usageHistory.rangeStart)} to ${prettyDate(usageHistory.rangeEnd)}`
+  const usageRangeLabel = state.usageHistory
+    ? `${prettyDate(state.usageHistory.rangeStart)} to ${prettyDate(state.usageHistory.rangeEnd)}`
     : undefined;
 
-  const totalBandwidthTodayGb = networkData.totalBandwidthTodayGb
-    ?? Number(
-      networkData.usageOverTime.reduce((sum, point) => sum + point.bandwidthGb, 0).toFixed(3),
+  const totalBandwidthTodayGb =
+    state.networkData.totalBandwidthTodayGb ??
+    Number(
+      state.networkData.usageOverTime
+        .reduce((sum, point) => sum + point.bandwidthGb, 0)
+        .toFixed(3),
     );
 
   return (
-    <section className="space-y-6">
+    <section className="space-y-6" aria-label="Network analytics dashboard">
       {collectorEnabled ? (
-        <section className="card-surface flex items-center justify-between gap-3 px-4 py-3 text-sm">
+        <section
+          className="card-surface flex flex-col items-start justify-between gap-3 px-4 py-3 text-sm sm:flex-row sm:items-center"
+          aria-live="polite"
+          aria-label="Router collector status"
+        >
           <div className="flex items-center gap-2">
             <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                streamStatus === "live"
+              className={`h-2.5 w-2.5 rounded-full transition-all ${
+                state.streamStatus === "live"
                   ? "bg-emerald-500"
-                  : streamStatus === "connecting"
-                    ? "bg-amber-500"
+                  : state.streamStatus === "connecting"
+                    ? "animate-pulse bg-amber-500"
                     : "bg-rose-500"
               }`}
+              role="status"
+              aria-label={
+                state.streamStatus === "live"
+                  ? "Live feed connected"
+                  : state.streamStatus === "connecting"
+                    ? "Connecting to router"
+                    : "Offline"
+              }
             />
             <p className="font-medium text-slate-700">
               Router Collector:{" "}
-              {streamStatus === "live"
-                ? "Live feed connected"
-                : streamStatus === "connecting"
-                  ? "Connecting..."
-                  : "Unavailable (fallback data active)"}
+              <span className="font-semibold">
+                {state.streamStatus === "live"
+                  ? "Live feed connected"
+                  : state.streamStatus === "connecting"
+                    ? "Connecting..."
+                    : "Unavailable (fallback data active)"}
+              </span>
             </p>
           </div>
           <p className="hidden text-xs text-slate-500 sm:block">
@@ -212,68 +372,130 @@ const Network = () => {
         />
 
         <section className="card-surface p-4 sm:p-5">
-          <div className="flex flex-wrap items-center gap-3">
-            {intervalOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => setInterval(option.value)}
-                className={`rounded-xl border px-3 py-2 text-sm font-semibold transition ${
-                  interval === option.value
-                    ? "border-sky-300 bg-sky-50 text-sky-700"
-                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
+          <fieldset>
+            <legend className="mb-3 text-sm font-semibold text-slate-700">
+              Time Interval
+            </legend>
+            <div className="flex flex-wrap items-center gap-3">
+              {intervalOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    dispatch({ type: "SET_INTERVAL", payload: option.value });
+                  }}
+                  className={`rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                    state.interval === option.value
+                      ? "border-sky-300 bg-sky-50 text-sky-700"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                  }`}
+                  aria-pressed={state.interval === option.value}
+                  aria-label={`Select ${option.label.toLowerCase()} interval`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
 
-          {interval === "custom" ? (
-            <div className="mt-4 flex flex-wrap items-end gap-3">
-              <label className="flex flex-col gap-1 text-xs font-semibold text-slate-500">
-                Start date
-                <input
-                  type="date"
-                  value={customStart}
-                  max={customEnd}
-                  onChange={(event) => setCustomStart(event.target.value)}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-sky-300"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-xs font-semibold text-slate-500">
-                End date
-                <input
-                  type="date"
-                  value={customEnd}
-                  min={customStart}
-                  onChange={(event) => setCustomEnd(event.target.value)}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-sky-300"
-                />
-              </label>
+          {state.interval === "custom" ? (
+            <fieldset className="mt-4 border-t border-slate-200 pt-4">
+              <legend className="mb-3 text-sm font-semibold text-slate-700">
+                Custom Date Range
+              </legend>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex flex-col gap-1 text-xs font-semibold text-slate-500">
+                  Start date
+                  <input
+                    type="date"
+                    value={state.customStart}
+                    max={state.customEnd}
+                    onChange={(event) =>
+                      dispatch({
+                        type: "SET_CUSTOM_START",
+                        payload: event.target.value,
+                      })
+                    }
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                    aria-label="Start date for custom range"
+                    aria-describedby="date-range-hint"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs font-semibold text-slate-500">
+                  End date
+                  <input
+                    type="date"
+                    value={state.customEnd}
+                    min={state.customStart}
+                    onChange={(event) =>
+                      dispatch({
+                        type: "SET_CUSTOM_END",
+                        payload: event.target.value,
+                      })
+                    }
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
+                    aria-label="End date for custom range"
+                    aria-describedby="date-range-hint"
+                  />
+                </label>
+              </div>
+              <p id="date-range-hint" className="mt-2 text-xs text-slate-500">
+                Select a date range up to today to view historical data.
+              </p>
+            </fieldset>
+          ) : null}
+
+          {state.historyError ? (
+            <div
+              className="mt-4 flex items-start gap-2 rounded-lg bg-amber-50 p-3"
+              role="alert"
+              aria-live="assertive"
+            >
+              <p className="text-sm font-medium text-amber-700">
+                {state.historyError}
+              </p>
+              {!isDateRangeValid || isCustomDateFuture ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const base = new Date();
+                    base.setDate(base.getDate() - 13);
+                    dispatch({
+                      type: "SET_CUSTOM_START",
+                      payload: toInputDate(base),
+                    });
+                    dispatch({
+                      type: "SET_CUSTOM_END",
+                      payload: toInputDate(new Date()),
+                    });
+                  }}
+                  className="ml-auto whitespace-nowrap rounded bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700 transition hover:bg-amber-200"
+                  aria-label="Reset date range to default"
+                >
+                  Reset
+                </button>
+              ) : null}
             </div>
           ) : null}
-
-          {historyError ? (
-            <p className="mt-4 text-sm font-medium text-amber-700">{historyError}</p>
-          ) : null}
-          {networkData.perDeviceMode ? (
+          {state.networkData.perDeviceMode ? (
             <p className="mt-4 text-xs text-slate-500">
               Per-device accounting mode:{" "}
-              <span className="font-semibold text-slate-700">{networkData.perDeviceMode}</span>
+              <span className="font-semibold text-slate-700">
+                {state.networkData.perDeviceMode}
+              </span>
             </p>
           ) : null}
         </section>
       </div>
 
       <NetworkUsageChart
-        data={networkData}
+        data={state.networkData}
         usagePoints={usagePoints}
         usageTitle={usageTitle}
         usageRangeLabel={usageRangeLabel}
-        loading={historyLoading}
+        loading={state.historyLoading}
       />
-      <DeviceTable devices={networkData.devices} />
+      <DeviceTable devices={state.networkData.devices} />
     </section>
   );
 };
