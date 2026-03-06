@@ -67,6 +67,20 @@ export interface NetworkAnalytics {
   devices: DeviceRecord[];
 }
 
+export interface RouterSnapshot {
+  timestamp: string;
+  source: "router" | "mock";
+  connected: boolean;
+  overview?: Partial<OverviewStats>;
+  network?: NetworkAnalytics;
+  router?: {
+    hostname?: string | null;
+    model?: string | null;
+    firmware?: string | null;
+  };
+  error?: string | null;
+}
+
 const employeeRecords: AttendanceRecord[] = [
   { employeeName: "Emma Johnson", checkIn: "08:41", checkOut: "17:39", status: "On Time" },
   { employeeName: "Liam Smith", checkIn: "09:08", checkOut: "18:05", status: "Late" },
@@ -204,7 +218,7 @@ const responses: Record<MockEndpoints, unknown> = {
   "/network": networkPayload,
 };
 
-const apiClient = axios.create({
+const mockApiClient = axios.create({
   baseURL: "/api",
   adapter: async (config): Promise<AxiosResponse> => {
     await wait(450 + Math.floor(Math.random() * 450));
@@ -222,20 +236,119 @@ const apiClient = axios.create({
   },
 });
 
+const collectorBaseUrl = (
+  import.meta.env.VITE_COLLECTOR_BASE_URL as string | undefined
+)?.replace(/\/$/, "") ?? "http://localhost:8000";
+
+const collectorEnabled = import.meta.env.VITE_USE_ROUTER_COLLECTOR === "true";
+
+const collectorApiClient = axios.create({
+  baseURL: `${collectorBaseUrl}/api`,
+  timeout: 4000,
+});
+
+const getMockData = async <T>(endpoint: MockEndpoints) => {
+  const response = await mockApiClient.get<T>(endpoint);
+  return response.data;
+};
+
+export const isCollectorEnabled = () => collectorEnabled;
+
 export const formatBandwidth = (value: number) =>
   `${value.toLocaleString(undefined, { maximumFractionDigits: 1 })} GB`;
 
 export const fetchOverviewStats = async () => {
-  const response = await apiClient.get<OverviewStats>("/overview");
-  return response.data;
+  if (collectorEnabled) {
+    try {
+      const response = await collectorApiClient.get<Partial<OverviewStats>>("/overview");
+      return {
+        ...overviewPayload,
+        ...response.data,
+      };
+    } catch {
+      // fall back to local mock data
+    }
+  }
+
+  return getMockData<OverviewStats>("/overview");
 };
 
 export const fetchAttendanceAnalytics = async () => {
-  const response = await apiClient.get<AttendanceAnalytics>("/attendance");
-  return response.data;
+  return getMockData<AttendanceAnalytics>("/attendance");
 };
 
 export const fetchNetworkAnalytics = async () => {
-  const response = await apiClient.get<NetworkAnalytics>("/network");
-  return response.data;
+  if (collectorEnabled) {
+    try {
+      const response = await collectorApiClient.get<NetworkAnalytics>("/network");
+      return response.data;
+    } catch {
+      // fall back to local mock data
+    }
+  }
+
+  return getMockData<NetworkAnalytics>("/network");
+};
+
+export const fetchRouterSnapshot = async () => {
+  if (!collectorEnabled) {
+    return null;
+  }
+
+  try {
+    const response = await collectorApiClient.get<RouterSnapshot>("/router/snapshot");
+    return response.data;
+  } catch {
+    return null;
+  }
+};
+
+export const subscribeToRouterStream = (
+  onSnapshot: (snapshot: RouterSnapshot) => void,
+  onError?: (message: string) => void,
+) => {
+  if (!collectorEnabled) {
+    return () => undefined;
+  }
+
+  const wsUrl = `${collectorBaseUrl.replace(/^http/, "ws")}/ws/router`;
+  let socket: WebSocket | null = null;
+  let isDisposed = false;
+  let reconnectTimer: number | null = null;
+
+  const connect = () => {
+    if (isDisposed) {
+      return;
+    }
+
+    socket = new WebSocket(wsUrl);
+
+    socket.onmessage = (event) => {
+      try {
+        onSnapshot(JSON.parse(event.data) as RouterSnapshot);
+      } catch {
+        onError?.("Received invalid payload from router stream.");
+      }
+    };
+
+    socket.onerror = () => {
+      onError?.("Router stream connection failed.");
+    };
+
+    socket.onclose = () => {
+      if (!isDisposed) {
+        reconnectTimer = window.setTimeout(connect, 1500);
+      }
+    };
+  };
+
+  connect();
+
+  return () => {
+    isDisposed = true;
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+    }
+    socket?.close();
+  };
 };
