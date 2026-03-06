@@ -13,15 +13,25 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { NetworkAnalytics } from "../services/api";
+import type { NetworkAnalytics, UsageOverTimePoint } from "../services/api";
 
 interface NetworkUsageChartProps {
   data: NetworkAnalytics;
+  usagePoints: UsageOverTimePoint[];
+  usageTitle: string;
+  usageRangeLabel?: string;
+  loading?: boolean;
 }
 
 const pieColors = ["#0ea5e9", "#14b8a6", "#f59e0b", "#6366f1", "#f97316"];
 
-const NetworkUsageChart = ({ data }: NetworkUsageChartProps) => {
+const NetworkUsageChart = ({
+  data,
+  usagePoints,
+  usageTitle,
+  usageRangeLabel,
+  loading = false,
+}: NetworkUsageChartProps) => {
   return (
     <div className="grid gap-5 xl:grid-cols-3">
       <section className="card-surface p-4 sm:p-5">
@@ -45,10 +55,22 @@ const NetworkUsageChart = ({ data }: NetworkUsageChartProps) => {
       </section>
 
       <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">Bandwidth Usage Over Time</h3>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="section-title">{usageTitle}</h3>
+            {usageRangeLabel ? (
+              <p className="mt-1 text-xs font-medium text-slate-500">{usageRangeLabel}</p>
+            ) : null}
+          </div>
+          {loading ? (
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+              Updating...
+            </span>
+          ) : null}
+        </div>
         <div className="mt-4 h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data.usageOverTime}>
+            <LineChart data={usagePoints}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="time" tick={{ fill: "#475569", fontSize: 12 }} />
               <YAxis tick={{ fill: "#475569", fontSize: 12 }} unit=" GB" />

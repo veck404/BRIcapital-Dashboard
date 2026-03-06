@@ -4,3 +4,6 @@ dist
 .env
 .env.local
 *.log
+*.pyc
+collector/__pycache__/
+collector/data/

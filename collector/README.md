@@ -8,6 +8,7 @@ This FastAPI service polls an ASUSWRT router (including `RT-AX86U Pro`) and expo
 - `GET /api/router/snapshot`
 - `GET /api/overview`
 - `GET /api/network`
+- `GET /api/network/usage-history?interval=daily|weekly|monthly|custom&start=YYYY-MM-DD&end=YYYY-MM-DD`
 - `WS /ws/router` (pushes latest snapshot after each poll)
 
 ## Setup
@@ -33,3 +34,4 @@ Or from project root:
 
 - If credentials are missing and `ROUTER_MOCK_MODE=auto`, the service runs in live-mock mode so the dashboard still updates in real time.
 - For production, run over LAN/VPN only and keep `ROUTER_PASSWORD` in environment variables (not committed files).
+- Usage history is retained for 6 months by default (`ROUTER_USAGE_RETENTION_DAYS=183`) and persisted to `collector/data/usage-history.json`.

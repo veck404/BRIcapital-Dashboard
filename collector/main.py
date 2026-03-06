@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
+import json
 import logging
 import os
+from pathlib import Path
 import random
 import time
 from typing import Any
@@ -21,10 +23,17 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
-    from asusrouter import AsusData, AsusRouter
+    from asusrouter import AsusData, AsusRouter, Endpoint
+    from asusrouter.modules.endpoint import (
+        process as endpoint_process,
+        read as endpoint_read,
+    )
 except ImportError:  # pragma: no cover - optional until dependencies are installed
     AsusData = None
     AsusRouter = None
+    Endpoint = None
+    endpoint_read = None
+    endpoint_process = None
 
 logging.basicConfig(
     level=os.getenv("COLLECTOR_LOG_LEVEL", "INFO").upper(),
@@ -89,7 +98,11 @@ class CollectorSettings:
     router_port: int | None
     poll_interval_seconds: float
     history_limit: int
+    usage_retention_days: int
+    usage_history_file: str
+    usage_persist_interval_seconds: float
     mock_mode: bool
+    max_device_rows: int
     host: str
     port: int
     allowed_origins: list[str]
@@ -118,6 +131,11 @@ def load_settings() -> CollectorSettings:
     )
     allowed_origins = [origin.strip() for origin in origins.split(",") if origin.strip()]
 
+    history_file = os.getenv(
+        "ROUTER_USAGE_HISTORY_FILE",
+        str(Path(__file__).resolve().parent / "data" / "usage-history.json"),
+    ).strip()
+
     return CollectorSettings(
         router_host=host,
         router_username=username,
@@ -126,7 +144,14 @@ def load_settings() -> CollectorSettings:
         router_port=router_port,
         poll_interval_seconds=max(env_float("ROUTER_POLL_INTERVAL", 3.0), 0.5),
         history_limit=max(env_int("ROUTER_HISTORY_LIMIT", 60), 10),
+        usage_retention_days=max(env_int("ROUTER_USAGE_RETENTION_DAYS", 183), 30),
+        usage_history_file=history_file,
+        usage_persist_interval_seconds=max(
+            env_float("ROUTER_USAGE_PERSIST_INTERVAL", 20.0),
+            2.0,
+        ),
         mock_mode=mock_mode,
+        max_device_rows=max(env_int("ROUTER_MAX_DEVICE_ROWS", 60), 10),
         host=os.getenv("COLLECTOR_HOST", "0.0.0.0"),
         port=env_int("COLLECTOR_PORT", 8000),
         allowed_origins=allowed_origins,
@@ -150,9 +175,16 @@ class RouterCollector:
         self._usage_history: deque[dict[str, Any]] = deque(
             maxlen=self.settings.history_limit
         )
+        self._hourly_usage_gb: dict[str, float] = {}
+        self._history_dirty = False
+        self._last_history_persist_ts = 0.0
         self._prev_primary_interface: str | None = None
         self._prev_primary_rx: int | None = None
         self._prev_primary_tx: int | None = None
+        self._prev_client_total_bytes: dict[str, int] = {}
+        self._last_distribution_ts: float | None = None
+        self._seen_online_ids: set[str] = set()
+        self._per_device_mode = "estimated_activity"
 
         self._connected = False
         self._last_error: str | None = None
@@ -160,6 +192,7 @@ class RouterCollector:
         self._router_firmware: str | None = None
 
         self._mock_devices = self._build_mock_devices()
+        self._load_usage_history()
         self._snapshot: dict[str, Any] = self._build_initial_snapshot()
 
     async def start(self) -> None:
@@ -180,6 +213,7 @@ class RouterCollector:
                 pass
             self._task = None
 
+        self._persist_usage_history(force=True)
         await self._close_router()
 
     async def get_snapshot(self) -> dict[str, Any]:
@@ -198,8 +232,33 @@ class RouterCollector:
             "routerHost": self.settings.router_host or None,
             "routerModel": self._router_model,
             "routerFirmware": self._router_firmware,
+            "perDeviceMode": self._per_device_mode,
             "lastError": self._last_error,
             "timestamp": now_iso(),
+        }
+
+    async def get_usage_history(
+        self,
+        interval: str,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, Any]:
+        """Return aggregated bandwidth history for chart filters."""
+
+        interval_key = interval.strip().lower()
+        if interval_key not in {"daily", "weekly", "monthly", "custom"}:
+            interval_key = "daily"
+
+        points, range_start, range_end = self._build_usage_history(
+            interval=interval_key,
+            start=start,
+            end=end,
+        )
+        return {
+            "interval": interval_key,
+            "rangeStart": range_start.isoformat(),
+            "rangeEnd": range_end.isoformat(),
+            "points": points,
         }
 
     async def register_socket(self, websocket: WebSocket) -> None:
@@ -229,6 +288,7 @@ class RouterCollector:
                 )
                 await self._set_snapshot(snapshot)
                 await self._broadcast(snapshot)
+                self._persist_usage_history(force=False)
                 self._last_error = None
             except asyncio.CancelledError:
                 raise
@@ -259,7 +319,9 @@ class RouterCollector:
             self._router.async_get_data(AsusData.NETWORK, force=True),
         )
 
+        exact_client_counters = await self._fetch_client_total_counters()
         normalized_clients = self._normalize_clients(clients_raw)
+        self._inject_exact_counters(normalized_clients, exact_client_counters)
         period_delta_gb = self._extract_period_delta_from_network_counters(network_raw)
         self._connected = True
         return self._assemble_snapshot(
@@ -403,17 +465,25 @@ class RouterCollector:
         period_delta_gb = max(period_delta_gb, 0.0)
         self._daily_total_gb += period_delta_gb
         self._distribute_period_usage(period_delta_gb, normalized_clients)
+        self._record_usage_delta(period_delta_gb)
+        self._refresh_intraday_usage_history()
 
-        self._usage_history.append(
-            {
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "bandwidthGb": round_gb(self._daily_total_gb),
-            }
-        )
-
-        device_rows = []
+        active_devices = 0
+        device_rows: list[dict[str, Any]] = []
         for client in normalized_clients:
+            if client["online"]:
+                active_devices += 1
+                self._seen_online_ids.add(client["id"])
+
             usage_gb = self._device_usage_gb.get(client["id"], 0.0)
+            keep_row = (
+                client["online"]
+                or usage_gb > 0.0005
+                or client["id"] in self._seen_online_ids
+            )
+            if not keep_row:
+                continue
+
             device_rows.append(
                 {
                     "id": client["id"],
@@ -424,15 +494,22 @@ class RouterCollector:
                 }
             )
 
-        device_rows.sort(key=lambda row: row["bandwidthGb"], reverse=True)
-        top_ten = device_rows[:10]
+        device_rows.sort(
+            key=lambda row: (row["status"] == "Online", row["bandwidthGb"]),
+            reverse=True,
+        )
+        device_rows = device_rows[: self.settings.max_device_rows]
+        top_ten = sorted(
+            device_rows,
+            key=lambda row: row["bandwidthGb"],
+            reverse=True,
+        )[:10]
 
         top_devices = [
             {"device": row["deviceName"], "bandwidthGb": row["bandwidthGb"]}
             for row in top_ten
         ]
         traffic_distribution = self._build_traffic_distribution(top_ten)
-        active_devices = sum(1 for row in device_rows if row["status"] == "Online")
 
         return {
             "timestamp": now_iso(),
@@ -451,6 +528,8 @@ class RouterCollector:
                 "topDevices": top_devices,
                 "usageOverTime": list(self._usage_history),
                 "trafficDistribution": traffic_distribution,
+                "perDeviceMode": self._per_device_mode,
+                "totalBandwidthTodayGb": round_gb(self._daily_total_gb),
                 "devices": [
                     {
                         "deviceName": row["deviceName"],
@@ -491,6 +570,9 @@ class RouterCollector:
         self._daily_total_gb = 0.0
         self._device_usage_gb.clear()
         self._usage_history.clear()
+        self._prev_client_total_bytes.clear()
+        self._last_distribution_ts = None
+        self._seen_online_ids.clear()
 
     def _normalize_clients(self, raw: Any) -> list[dict[str, Any]]:
         """Normalize `AsusData.CLIENTS` payload to dashboard-friendly shape."""
@@ -541,6 +623,59 @@ class RouterCollector:
             )
 
         return clients
+
+    async def _fetch_client_total_counters(self) -> dict[str, int]:
+        """Fetch exact per-client byte counters from update_clients endpoint.
+
+        On many stock firmwares these fields are empty, but when available
+        they provide cumulative values (`totalTx` + `totalRx`) per client.
+        """
+
+        if (
+            self.settings.mock_mode
+            or self._router is None
+            or Endpoint is None
+            or endpoint_read is None
+            or endpoint_process is None
+        ):
+            return {}
+
+        try:
+            status, _, content = await self._router.async_api_query(Endpoint.UPDATE_CLIENTS)
+            if status != 200:
+                return {}
+
+            parsed = endpoint_read(Endpoint.UPDATE_CLIENTS, content)
+            state = endpoint_process(Endpoint.UPDATE_CLIENTS, parsed)
+            clients_raw = state.get(AsusData.CLIENTS, {})
+            if not isinstance(clients_raw, dict):
+                return {}
+
+            counters: dict[str, int] = {}
+            for mac, info in clients_raw.items():
+                if not isinstance(info, dict):
+                    continue
+                tx = self._as_counter(info.get("totalTx"))
+                rx = self._as_counter(info.get("totalRx"))
+                if tx >= 0 and rx >= 0:
+                    counters[self._normalize_mac(str(mac))] = tx + rx
+            return counters
+        except Exception:  # noqa: BLE001
+            return {}
+
+    def _inject_exact_counters(
+        self,
+        normalized_clients: list[dict[str, Any]],
+        counters: dict[str, int],
+    ) -> None:
+        """Attach exact counters from update_clients payload where available."""
+
+        if not counters:
+            return
+        for client in normalized_clients:
+            key = self._normalize_mac(client["id"])
+            if key in counters:
+                client["totalBytes"] = counters[key]
 
     def _extract_period_delta_from_network_counters(self, raw_network: Any) -> float:
         """Calculate transferred GB for the current poll interval using counters.
@@ -596,37 +731,383 @@ class RouterCollector:
     ) -> None:
         """Allocate period usage across active devices.
 
-        Device allocations are estimates based on relative client activity
-        (`rxSpeedMbps + txSpeedMbps`). Total is anchored to WAN byte counters.
+        Priority:
+        1) Exact per-device cumulative counters (`totalBytes`) when available.
+        2) Fallback to integrating per-device live rates over elapsed time.
+
+        Note: on this ASUS firmware, client rates are reported in Kbps even
+        though variable names keep legacy `...Mbps` naming in this file.
         """
+
+        interval_seconds = self._next_distribution_interval_seconds()
 
         for client in normalized_clients:
             self._device_usage_gb.setdefault(client["id"], 0.0)
 
-        if period_delta_gb <= 0:
-            return
-
         active_clients = [client for client in normalized_clients if client["online"]]
         if not active_clients:
+            self._per_device_mode = "estimated_activity"
             return
 
-        weighted_clients: list[tuple[dict[str, Any], float]] = []
-        for client in active_clients:
-            activity = max(client["rxSpeedMbps"], 0.0) + max(client["txSpeedMbps"], 0.0)
-            # Cap and floor to avoid extreme skew from link-rate style values.
-            score = min(max(activity, 0.01), 2_000.0)
-            weighted_clients.append((client, score))
+        exact_deltas: dict[str, float] = {}
+        for client in normalized_clients:
+            total_bytes = self._as_counter(client.get("totalBytes"))
+            if total_bytes < 0:
+                continue
 
-        total_score = sum(score for _, score in weighted_clients)
-        if total_score <= 0:
-            share = period_delta_gb / len(active_clients)
-            for client in active_clients:
-                self._device_usage_gb[client["id"]] += share
+            device_id = client["id"]
+            prev = self._prev_client_total_bytes.get(device_id)
+            self._prev_client_total_bytes[device_id] = total_bytes
+            if prev is None:
+                continue
+            if total_bytes < prev:
+                # Counter reset or wrap.
+                continue
+
+            delta_gb = (total_bytes - prev) / 1_000_000_000
+            if delta_gb > 0:
+                exact_deltas[device_id] = delta_gb
+                self._device_usage_gb[device_id] += delta_gb
+
+        if exact_deltas:
+            exact_client_ids = set(exact_deltas.keys())
+            active_without_exact = [
+                client for client in active_clients if client["id"] not in exact_client_ids
+            ]
+            if not active_without_exact:
+                self._per_device_mode = "exact_counters"
+                return
+
+            self._per_device_mode = "mixed_exact_and_rate"
+            self._integrate_rate_usage(active_without_exact, interval_seconds)
             return
 
-        for client, score in weighted_clients:
-            allocation = period_delta_gb * (score / total_score)
-            self._device_usage_gb[client["id"]] += allocation
+        self._per_device_mode = "rate_integration"
+        self._integrate_rate_usage(active_clients, interval_seconds)
+
+    def _integrate_rate_usage(
+        self,
+        clients: list[dict[str, Any]],
+        interval_seconds: float,
+    ) -> None:
+        """Integrate per-device traffic rates into byte totals."""
+
+        if interval_seconds <= 0:
+            return
+
+        # Router payload rates are in Kbps. Mock generator uses Mbps-like values.
+        bytes_per_rate_unit_second = 125_000.0 if self.settings.mock_mode else 125.0
+        max_reasonable_rate = 2_000_000.0 if self.settings.mock_mode else 2_000_000.0
+
+        for client in clients:
+            rate = max(client["rxSpeedMbps"], 0.0) + max(client["txSpeedMbps"], 0.0)
+            if rate <= 0:
+                continue
+
+            rate = min(rate, max_reasonable_rate)
+            delta_gb = (rate * bytes_per_rate_unit_second * interval_seconds) / 1_000_000_000
+            if delta_gb <= 0:
+                continue
+
+            self._device_usage_gb[client["id"]] += delta_gb
+
+    def _next_distribution_interval_seconds(self) -> float:
+        """Return elapsed seconds since last per-device distribution."""
+
+        now_ts = time.monotonic()
+        if self._last_distribution_ts is None:
+            self._last_distribution_ts = now_ts
+            return max(self.settings.poll_interval_seconds, 0.5)
+
+        elapsed = max(now_ts - self._last_distribution_ts, 0.0)
+        self._last_distribution_ts = now_ts
+
+        # Guard against pause/resume spikes after process stalls.
+        max_window = max(self.settings.poll_interval_seconds * 4, 20.0)
+        return min(max(elapsed, 0.25), max_window)
+
+    def _history_file_path(self) -> Path:
+        """Resolve usage-history file path."""
+
+        return Path(self.settings.usage_history_file).expanduser()
+
+    def _load_usage_history(self) -> None:
+        """Load persisted hourly usage history from disk."""
+
+        path = self._history_file_path()
+        if not path.exists():
+            return
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            LOGGER.warning("Unable to read usage history file (%s): %s", path, exc)
+            return
+
+        rows = payload.get("hourly", [])
+        if not isinstance(rows, list):
+            return
+
+        loaded: dict[str, float] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            bucket = self._parse_hour_bucket(str(row.get("hour", "")))
+            if bucket is None:
+                continue
+
+            gb = max(self._as_float(row.get("bandwidthGb")), 0.0)
+            if gb <= 0:
+                continue
+
+            key = bucket.isoformat(timespec="seconds")
+            loaded[key] = loaded.get(key, 0.0) + gb
+
+        self._hourly_usage_gb = loaded
+        self._prune_hourly_usage()
+        self._daily_total_gb = self._build_daily_totals().get(datetime.now().date(), 0.0)
+        self._refresh_intraday_usage_history()
+        self._history_dirty = False
+
+    def _persist_usage_history(self, force: bool) -> None:
+        """Persist usage history to disk with write throttling."""
+
+        if not self._history_dirty and not force:
+            return
+
+        now_ts = time.monotonic()
+        if (
+            not force
+            and now_ts - self._last_history_persist_ts
+            < self.settings.usage_persist_interval_seconds
+        ):
+            return
+
+        path = self._history_file_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "updatedAt": now_iso(),
+                "hourly": [
+                    {"hour": hour, "bandwidthGb": round_gb(gb)}
+                    for hour, gb in sorted(self._hourly_usage_gb.items())
+                    if gb > 0
+                ],
+            }
+            path.write_text(
+                json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            LOGGER.warning("Unable to persist usage history file (%s): %s", path, exc)
+            return
+
+        self._last_history_persist_ts = now_ts
+        self._history_dirty = False
+
+    def _prune_hourly_usage(self) -> None:
+        """Drop usage buckets older than retention window."""
+
+        cutoff = datetime.now().replace(minute=0, second=0, microsecond=0) - timedelta(
+            days=self.settings.usage_retention_days
+        )
+        keys_to_remove: list[str] = []
+        for key, value in self._hourly_usage_gb.items():
+            bucket = self._parse_hour_bucket(key)
+            if bucket is None or bucket < cutoff or value <= 0:
+                keys_to_remove.append(key)
+
+        if not keys_to_remove:
+            return
+
+        for key in keys_to_remove:
+            self._hourly_usage_gb.pop(key, None)
+
+        self._history_dirty = True
+
+    def _record_usage_delta(self, period_delta_gb: float) -> None:
+        """Accumulate current poll delta into hourly usage buckets."""
+
+        if period_delta_gb > 0:
+            bucket = datetime.now().replace(minute=0, second=0, microsecond=0)
+            key = bucket.isoformat(timespec="seconds")
+            self._hourly_usage_gb[key] = self._hourly_usage_gb.get(key, 0.0) + period_delta_gb
+            self._history_dirty = True
+
+        self._prune_hourly_usage()
+
+    def _refresh_intraday_usage_history(self) -> None:
+        """Rebuild short usage series for quick charting in live snapshots."""
+
+        now = datetime.now()
+        start_of_day = datetime(now.year, now.month, now.day)
+        points: list[dict[str, Any]] = []
+        for hour in range(now.hour + 1):
+            bucket = start_of_day + timedelta(hours=hour)
+            key = bucket.isoformat(timespec="seconds")
+            points.append(
+                {
+                    "time": bucket.strftime("%H:%M"),
+                    "bandwidthGb": round_gb(self._hourly_usage_gb.get(key, 0.0)),
+                }
+            )
+
+        self._usage_history = deque(points[-self.settings.history_limit :], maxlen=self.settings.history_limit)
+
+    def _build_usage_history(
+        self,
+        interval: str,
+        start: str | None,
+        end: str | None,
+    ) -> tuple[list[dict[str, Any]], date, date]:
+        """Build chart-ready usage points for requested interval."""
+
+        interval_key = interval.strip().lower()
+        if interval_key not in {"daily", "weekly", "monthly", "custom"}:
+            interval_key = "daily"
+
+        today = datetime.now().date()
+        earliest = today - timedelta(days=self.settings.usage_retention_days - 1)
+        daily_totals = self._build_daily_totals()
+
+        if interval_key == "weekly":
+            current_week_start = today - timedelta(days=today.weekday())
+            first_week = current_week_start - timedelta(weeks=25)
+            while first_week < earliest:
+                first_week += timedelta(weeks=1)
+
+            weekly_totals: dict[date, float] = {}
+            for day, value in daily_totals.items():
+                if day < first_week or day > today:
+                    continue
+                week_start = day - timedelta(days=day.weekday())
+                weekly_totals[week_start] = weekly_totals.get(week_start, 0.0) + value
+
+            points: list[dict[str, Any]] = []
+            cursor = first_week
+            while cursor <= current_week_start:
+                iso = cursor.isocalendar()
+                points.append(
+                    {
+                        "time": f"W{iso.week} {iso.year}",
+                        "bandwidthGb": round_gb(weekly_totals.get(cursor, 0.0)),
+                    }
+                )
+                cursor += timedelta(weeks=1)
+
+            return points, first_week, today
+
+        if interval_key == "monthly":
+            current_month = today.replace(day=1)
+            month_starts = [self._shift_months(current_month, offset) for offset in range(-5, 1)]
+
+            monthly_totals: dict[date, float] = {}
+            first_month = month_starts[0]
+            for day, value in daily_totals.items():
+                if day < first_month or day > today:
+                    continue
+                bucket = day.replace(day=1)
+                monthly_totals[bucket] = monthly_totals.get(bucket, 0.0) + value
+
+            points = [
+                {
+                    "time": month.strftime("%b %Y"),
+                    "bandwidthGb": round_gb(monthly_totals.get(month, 0.0)),
+                }
+                for month in month_starts
+            ]
+            return points, first_month, today
+
+        if interval_key == "custom":
+            custom_start = self._parse_query_date(start) or (today - timedelta(days=29))
+            custom_end = self._parse_query_date(end) or today
+            if custom_start > custom_end:
+                custom_start, custom_end = custom_end, custom_start
+            custom_start = max(custom_start, earliest)
+            custom_end = min(custom_end, today)
+            if custom_start > custom_end:
+                custom_start = custom_end
+            return self._build_daily_points(custom_start, custom_end, daily_totals)
+
+        daily_start = max(today - timedelta(days=29), earliest)
+        return self._build_daily_points(daily_start, today, daily_totals)
+
+    def _build_daily_points(
+        self,
+        start_day: date,
+        end_day: date,
+        daily_totals: dict[date, float],
+    ) -> tuple[list[dict[str, Any]], date, date]:
+        """Build one-point-per-day chart series."""
+
+        points: list[dict[str, Any]] = []
+        cursor = start_day
+        while cursor <= end_day:
+            points.append(
+                {
+                    "time": cursor.strftime("%b %d"),
+                    "bandwidthGb": round_gb(daily_totals.get(cursor, 0.0)),
+                }
+            )
+            cursor += timedelta(days=1)
+
+        return points, start_day, end_day
+
+    def _build_daily_totals(self) -> dict[date, float]:
+        """Aggregate hourly usage into daily totals."""
+
+        totals: dict[date, float] = {}
+        for hour_key, value in self._hourly_usage_gb.items():
+            if value <= 0:
+                continue
+            bucket = self._parse_hour_bucket(hour_key)
+            if bucket is None:
+                continue
+            day_key = bucket.date()
+            totals[day_key] = totals.get(day_key, 0.0) + value
+        return totals
+
+    def _parse_hour_bucket(self, value: str) -> datetime | None:
+        """Parse persisted hour key values safely."""
+
+        text = value.strip()
+        if not text:
+            return None
+
+        if text.endswith("Z"):
+            text = text[:-1]
+
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+        if parsed.tzinfo is not None:
+            parsed = parsed.replace(tzinfo=None)
+
+        return parsed.replace(minute=0, second=0, microsecond=0)
+
+    def _parse_query_date(self, value: str | None) -> date | None:
+        """Parse YYYY-MM-DD query values."""
+
+        if value is None:
+            return None
+
+        text = value.strip()
+        if not text:
+            return None
+
+        try:
+            return datetime.fromisoformat(text[:10]).date()
+        except ValueError:
+            return None
+
+    def _shift_months(self, month_start: date, offset: int) -> date:
+        """Shift a month-start date by `offset` months."""
+
+        month_index = (month_start.year * 12 + month_start.month - 1) + offset
+        year, month = divmod(month_index, 12)
+        return date(year, month + 1, 1)
 
     def _build_initial_snapshot(self) -> dict[str, Any]:
         """Create initial empty snapshot."""
@@ -643,12 +1124,14 @@ class RouterCollector:
             },
             "overview": {
                 "activeDevices": 0,
-                "totalBandwidthGb": 0.0,
+                "totalBandwidthGb": round_gb(self._daily_total_gb),
             },
             "network": {
                 "topDevices": [],
-                "usageOverTime": [],
+                "usageOverTime": list(self._usage_history),
                 "trafficDistribution": [{"name": "No Traffic", "value": 100}],
+                "perDeviceMode": self._per_device_mode,
+                "totalBandwidthTodayGb": round_gb(self._daily_total_gb),
                 "devices": [],
             },
             "error": None,
@@ -739,6 +1222,28 @@ class RouterCollector:
                 return -1
         return -1
 
+    def _as_counter(self, value: Any) -> int:
+        """Parse traffic counter values from router payload."""
+
+        if value is None:
+            return -1
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            text = value.strip().replace(",", "")
+            if text == "":
+                return -1
+            try:
+                return int(float(text))
+            except ValueError:
+                return -1
+        return -1
+
+    def _normalize_mac(self, value: str) -> str:
+        """Normalize MAC-like IDs for reliable map lookups."""
+
+        return value.strip().upper()
+
 
 settings = load_settings()
 collector = RouterCollector(settings)
@@ -800,6 +1305,17 @@ async def network() -> dict[str, Any]:
 
     snapshot = await collector.get_snapshot()
     return snapshot.get("network", {})
+
+
+@app.get("/api/network/usage-history")
+async def network_usage_history(
+    interval: str = "daily",
+    start: str | None = None,
+    end: str | None = None,
+) -> dict[str, Any]:
+    """Return bandwidth usage history for selected interval."""
+
+    return await collector.get_usage_history(interval=interval, start=start, end=end)
 
 
 @app.websocket("/ws/router")

@@ -4,7 +4,24 @@ interface DeviceTableProps {
   devices: DeviceRecord[];
 }
 
+const CCTV_DEVICE_KEYWORDS = [
+  "hikvision",
+  "cctv",
+  "camera",
+  "nvr",
+  "dvr",
+];
+
+const isCctvDevice = (deviceName: string) => {
+  const normalized = deviceName.toLowerCase();
+  return CCTV_DEVICE_KEYWORDS.some((keyword) => normalized.includes(keyword));
+};
+
 const DeviceTable = ({ devices }: DeviceTableProps) => {
+  const visibleDevices = devices.filter(
+    (device) => !isCctvDevice(device.deviceName),
+  );
+
   return (
     <div className="card-surface overflow-hidden">
       <div className="border-b border-slate-200/80 px-5 py-4">
@@ -30,7 +47,7 @@ const DeviceTable = ({ devices }: DeviceTableProps) => {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200/70">
-            {devices.map((device) => (
+            {visibleDevices.map((device) => (
               <tr key={`${device.ipAddress}-${device.deviceName}`}>
                 <td className="px-5 py-3 text-slate-700">{device.deviceName}</td>
                 <td className="px-5 py-3 text-slate-600">{device.ipAddress}</td>
