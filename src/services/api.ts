@@ -290,14 +290,15 @@ const normalizeRange = ({ interval, start, end }: NetworkUsageHistoryQuery): Usa
 
 const buildMockHourlyUsageHistory = () => {
   const now = new Date();
-  now.setMinutes(0, 0, 0);
+  now.setSeconds(0, 0);
+  now.setMinutes(now.getMinutes() >= 30 ? 30 : 0);
 
-  const totalHours = HISTORY_RETENTION_DAYS * 24;
+  const totalSlots = HISTORY_RETENTION_DAYS * 48;
   const rows: MockHourlyUsageRecord[] = [];
 
-  for (let offset = totalHours - 1; offset >= 0; offset -= 1) {
+  for (let offset = totalSlots - 1; offset >= 0; offset -= 1) {
     const pointTime = new Date(now);
-    pointTime.setHours(pointTime.getHours() - offset);
+    pointTime.setMinutes(pointTime.getMinutes() - (offset * 30));
 
     const hour = pointTime.getHours();
     const weekDay = pointTime.getDay();
@@ -306,16 +307,16 @@ const buildMockHourlyUsageHistory = () => {
     const officeLoad =
       hour >= 8 && hour <= 18 ? 1.45 : hour >= 6 && hour <= 22 ? 0.85 : 0.35;
     const weekendFactor = isWeekend ? 0.58 : 1;
-    const seasonalPulse = 1 + Math.sin((offset / 24) / 9) * 0.12;
-    const deterministicNoise = (((offset * 37) % 17) + 5) / 100;
+    const seasonalPulse = 1 + Math.sin((offset / 48) / 9) * 0.12;
+    const deterministicNoise = (((offset * 37) % 17) + 5) / 200;
 
     const bandwidthGb = Number(
-      (1.3 * officeLoad * weekendFactor * seasonalPulse + deterministicNoise).toFixed(3),
+      ((1.3 * officeLoad * weekendFactor * seasonalPulse + deterministicNoise) * 0.5).toFixed(3),
     );
 
     rows.push({
       timestamp: pointTime.toISOString(),
-      bandwidthGb: Math.max(0.05, bandwidthGb),
+      bandwidthGb: Math.max(0.025, bandwidthGb),
     });
   }
 

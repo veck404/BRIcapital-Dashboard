@@ -832,7 +832,7 @@ class RouterCollector:
         return Path(self.settings.usage_history_file).expanduser()
 
     def _load_usage_history(self) -> None:
-        """Load persisted hourly usage history from disk."""
+        """Load persisted intraday usage history from disk."""
 
         path = self._history_file_path()
         if not path.exists():
@@ -905,10 +905,16 @@ class RouterCollector:
         self._last_history_persist_ts = now_ts
         self._history_dirty = False
 
+    def _to_half_hour_bucket(self, value: datetime) -> datetime:
+        """Normalize timestamp to a 30-minute bucket boundary."""
+
+        minute = 30 if value.minute >= 30 else 0
+        return value.replace(minute=minute, second=0, microsecond=0)
+
     def _prune_hourly_usage(self) -> None:
         """Drop usage buckets older than retention window."""
 
-        cutoff = datetime.now().replace(minute=0, second=0, microsecond=0) - timedelta(
+        cutoff = self._to_half_hour_bucket(datetime.now()) - timedelta(
             days=self.settings.usage_retention_days
         )
         keys_to_remove: list[str] = []
@@ -926,10 +932,10 @@ class RouterCollector:
         self._history_dirty = True
 
     def _record_usage_delta(self, period_delta_gb: float) -> None:
-        """Accumulate current poll delta into hourly usage buckets."""
+        """Accumulate current poll delta into 30-minute usage buckets."""
 
         if period_delta_gb > 0:
-            bucket = datetime.now().replace(minute=0, second=0, microsecond=0)
+            bucket = self._to_half_hour_bucket(datetime.now())
             key = bucket.isoformat(timespec="seconds")
             self._hourly_usage_gb[key] = self._hourly_usage_gb.get(key, 0.0) + period_delta_gb
             self._history_dirty = True
@@ -941,9 +947,10 @@ class RouterCollector:
 
         now = datetime.now()
         start_of_day = datetime(now.year, now.month, now.day)
+        latest_bucket = self._to_half_hour_bucket(now)
         points: list[dict[str, Any]] = []
-        for hour in range(now.hour + 1):
-            bucket = start_of_day + timedelta(hours=hour)
+        bucket = start_of_day
+        while bucket <= latest_bucket:
             key = bucket.isoformat(timespec="seconds")
             points.append(
                 {
@@ -951,6 +958,7 @@ class RouterCollector:
                     "bandwidthGb": round_gb(self._hourly_usage_gb.get(key, 0.0)),
                 }
             )
+            bucket += timedelta(minutes=30)
 
         self._usage_history = deque(points[-self.settings.history_limit :], maxlen=self.settings.history_limit)
 
@@ -1068,7 +1076,7 @@ class RouterCollector:
         return totals
 
     def _parse_hour_bucket(self, value: str) -> datetime | None:
-        """Parse persisted hour key values safely."""
+        """Parse persisted usage-bucket key values safely."""
 
         text = value.strip()
         if not text:
@@ -1085,7 +1093,7 @@ class RouterCollector:
         if parsed.tzinfo is not None:
             parsed = parsed.replace(tzinfo=None)
 
-        return parsed.replace(minute=0, second=0, microsecond=0)
+        return self._to_half_hour_bucket(parsed)
 
     def _parse_query_date(self, value: str | None) -> date | None:
         """Parse YYYY-MM-DD query values."""

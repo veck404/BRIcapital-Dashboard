@@ -37,7 +37,13 @@ const filterBusinessHours = (
     const timeParts = timeStr.split(":");
     if (timeParts.length >= 2) {
       const hour = parseInt(timeParts[0], 10);
-      return Number.isFinite(hour) && hour >= 8 && hour <= 17;
+      const minute = parseInt(timeParts[1], 10);
+      if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+        return true;
+      }
+
+      const totalMinutes = (hour * 60) + minute;
+      return totalMinutes >= (8 * 60) && totalMinutes <= (17 * 60);
     }
     return true;
   });
