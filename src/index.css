@@ -1,0 +1,43 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Sora:wght@600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply m-0 bg-slate-100 font-sans text-slate-800 antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@layer components {
+  .card-surface {
+    @apply rounded-2xl border border-slate-200/80 bg-white/90 shadow-soft backdrop-blur-sm;
+  }
+
+  .section-title {
+    @apply font-heading text-lg font-semibold tracking-tight text-slate-900;
+  }
+}
+
+.page-enter {
+  animation: fade-slide 420ms ease-out both;
+}
+
+@keyframes fade-slide {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
