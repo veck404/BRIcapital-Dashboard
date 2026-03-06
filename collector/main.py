@@ -145,12 +145,14 @@ class RouterCollector:
         self._lock = asyncio.Lock()
 
         self._day_key = datetime.now().date().isoformat()
-        self._last_poll_monotonic: float | None = None
         self._daily_total_gb = 0.0
         self._device_usage_gb: dict[str, float] = {}
         self._usage_history: deque[dict[str, Any]] = deque(
             maxlen=self.settings.history_limit
         )
+        self._prev_primary_interface: str | None = None
+        self._prev_primary_rx: int | None = None
+        self._prev_primary_tx: int | None = None
 
         self._connected = False
         self._last_error: str | None = None
@@ -258,13 +260,13 @@ class RouterCollector:
         )
 
         normalized_clients = self._normalize_clients(clients_raw)
-        interface_total_mbps = self._sum_interface_speed_mbps(network_raw)
+        period_delta_gb = self._extract_period_delta_from_network_counters(network_raw)
         self._connected = True
         return self._assemble_snapshot(
             normalized_clients=normalized_clients,
             source="router",
             connected=True,
-            interface_total_mbps=interface_total_mbps,
+            period_delta_gb=period_delta_gb,
         )
 
     async def _collect_mock(self) -> dict[str, Any]:
@@ -295,11 +297,19 @@ class RouterCollector:
             for device in self._mock_devices
         ]
 
+        total_mbps = sum(
+            max(client["rxSpeedMbps"], 0.0) + max(client["txSpeedMbps"], 0.0)
+            for client in normalized_clients
+            if client["online"]
+        )
+        interval_seconds = max(self.settings.poll_interval_seconds, 0.5)
+        period_delta_gb = (total_mbps * 125_000 * interval_seconds) / 1_000_000_000
+
         return self._assemble_snapshot(
             normalized_clients=normalized_clients,
             source="mock",
             connected=True,
-            interface_total_mbps=0.0,
+            period_delta_gb=period_delta_gb,
         )
 
     async def _set_snapshot(self, snapshot: dict[str, Any]) -> None:
@@ -385,41 +395,18 @@ class RouterCollector:
         normalized_clients: list[dict[str, Any]],
         source: str,
         connected: bool,
-        interface_total_mbps: float,
+        period_delta_gb: float,
     ) -> dict[str, Any]:
         """Build payload matching dashboard contracts."""
 
         self._rollover_if_new_day()
-        now_monotonic = time.monotonic()
-        if self._last_poll_monotonic is None:
-            interval_seconds = self.settings.poll_interval_seconds
-        else:
-            interval_seconds = max(now_monotonic - self._last_poll_monotonic, 0.25)
-        self._last_poll_monotonic = now_monotonic
-
-        increment_devices_gb = 0.0
-        for client in normalized_clients:
-            speed_mbps = max(client["rxSpeedMbps"], 0.0) + max(client["txSpeedMbps"], 0.0)
-            if client["online"] and speed_mbps > 0:
-                delta_gb = (speed_mbps * 125_000 * interval_seconds) / 1_000_000_000
-                increment_devices_gb += delta_gb
-                self._device_usage_gb[client["id"]] = (
-                    self._device_usage_gb.get(client["id"], 0.0) + delta_gb
-                )
-            else:
-                self._device_usage_gb.setdefault(client["id"], 0.0)
-
-        increment_interfaces_gb = (
-            (interface_total_mbps * 125_000 * interval_seconds) / 1_000_000_000
-            if interface_total_mbps > 0
-            else 0.0
-        )
-        increment_gb = max(increment_devices_gb, increment_interfaces_gb)
-        self._daily_total_gb += increment_gb
+        period_delta_gb = max(period_delta_gb, 0.0)
+        self._daily_total_gb += period_delta_gb
+        self._distribute_period_usage(period_delta_gb, normalized_clients)
 
         self._usage_history.append(
             {
-                "time": datetime.now().strftime("%H:%M"),
+                "time": datetime.now().strftime("%H:%M:%S"),
                 "bandwidthGb": round_gb(self._daily_total_gb),
             }
         )
@@ -555,28 +542,91 @@ class RouterCollector:
 
         return clients
 
-    def _sum_interface_speed_mbps(self, raw_network: Any) -> float:
-        """Estimate aggregate interface throughput speed in Mbps."""
+    def _extract_period_delta_from_network_counters(self, raw_network: Any) -> float:
+        """Calculate transferred GB for the current poll interval using counters.
+
+        This uses cumulative `rx`/`tx` bytes from router network stats and computes
+        deltas between polls. It is far more reliable than integrating client link rates.
+        """
 
         network_map = self._as_dict(raw_network)
-        total_mbps = 0.0
-        for interface_data in network_map.values():
-            data = self._as_dict(interface_data)
-            rx = self._as_float(data.get("rx_speed"))
-            tx = self._as_float(data.get("tx_speed"))
-            total_mbps += self._normalize_speed_to_mbps(rx)
-            total_mbps += self._normalize_speed_to_mbps(tx)
-        return total_mbps
-
-    def _normalize_speed_to_mbps(self, value: float) -> float:
-        """Normalize unknown speed units to an approximate Mbps value."""
-
-        if value <= 0:
+        if not network_map:
             return 0.0
-        # Hook endpoint speeds are often bits/s and can be very large.
-        if value > 100_000:
-            return value / 1_000_000
-        return value
+
+        primary_interface = next(
+            (name for name in ("wan", "internet", "bridge") if name in network_map),
+            None,
+        )
+        if primary_interface is None:
+            primary_interface = next(iter(network_map.keys()), None)
+
+        if primary_interface is None:
+            return 0.0
+
+        interface_data = self._as_dict(network_map.get(primary_interface))
+        current_rx = self._as_int(interface_data.get("rx"))
+        current_tx = self._as_int(interface_data.get("tx"))
+        if current_rx < 0 or current_tx < 0:
+            return 0.0
+
+        # First sample or interface switch: initialize baseline.
+        if (
+            self._prev_primary_interface != primary_interface
+            or self._prev_primary_rx is None
+            or self._prev_primary_tx is None
+        ):
+            self._prev_primary_interface = primary_interface
+            self._prev_primary_rx = current_rx
+            self._prev_primary_tx = current_tx
+            return 0.0
+
+        delta_rx = max(current_rx - self._prev_primary_rx, 0)
+        delta_tx = max(current_tx - self._prev_primary_tx, 0)
+
+        self._prev_primary_interface = primary_interface
+        self._prev_primary_rx = current_rx
+        self._prev_primary_tx = current_tx
+
+        return (delta_rx + delta_tx) / 1_000_000_000
+
+    def _distribute_period_usage(
+        self,
+        period_delta_gb: float,
+        normalized_clients: list[dict[str, Any]],
+    ) -> None:
+        """Allocate period usage across active devices.
+
+        Device allocations are estimates based on relative client activity
+        (`rxSpeedMbps + txSpeedMbps`). Total is anchored to WAN byte counters.
+        """
+
+        for client in normalized_clients:
+            self._device_usage_gb.setdefault(client["id"], 0.0)
+
+        if period_delta_gb <= 0:
+            return
+
+        active_clients = [client for client in normalized_clients if client["online"]]
+        if not active_clients:
+            return
+
+        weighted_clients: list[tuple[dict[str, Any], float]] = []
+        for client in active_clients:
+            activity = max(client["rxSpeedMbps"], 0.0) + max(client["txSpeedMbps"], 0.0)
+            # Cap and floor to avoid extreme skew from link-rate style values.
+            score = min(max(activity, 0.01), 2_000.0)
+            weighted_clients.append((client, score))
+
+        total_score = sum(score for _, score in weighted_clients)
+        if total_score <= 0:
+            share = period_delta_gb / len(active_clients)
+            for client in active_clients:
+                self._device_usage_gb[client["id"]] += share
+            return
+
+        for client, score in weighted_clients:
+            allocation = period_delta_gb * (score / total_score)
+            self._device_usage_gb[client["id"]] += allocation
 
     def _build_initial_snapshot(self) -> dict[str, Any]:
         """Create initial empty snapshot."""
@@ -672,6 +722,22 @@ class RouterCollector:
             except ValueError:
                 return 0.0
         return 0.0
+
+    def _as_int(self, value: Any) -> int:
+        """Convert values to integer safely."""
+
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(float(value.strip()))
+            except ValueError:
+                return -1
+        return -1
 
 
 settings = load_settings()
