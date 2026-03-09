@@ -75,6 +75,32 @@ const toTimeLabel = (value: unknown) => {
   return `${pad2(hour)}:${pad2(minute)}`;
 };
 
+const parseTimeToMinutes = (value: string) => {
+  const text = value.trim();
+  const parsed = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!parsed) {
+    return null;
+  }
+
+  const hour = Number(parsed[1]);
+  const minute = Number(parsed[2]);
+  if (
+    !Number.isInteger(hour)
+    || !Number.isInteger(minute)
+    || hour < 0
+    || hour > 23
+    || minute < 0
+    || minute > 59
+  ) {
+    return null;
+  }
+
+  return (hour * 60) + minute;
+};
+
+const minutesToClockLabel = (value: number) =>
+  `${pad2(Math.floor(value / 60))}:${pad2(value % 60)}`;
+
 const toDateKey = (value: unknown, xlsx: XlsxModule): string | null => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return `${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`;
@@ -200,6 +226,7 @@ interface AttendanceDayRow {
 export interface EmployeeAttendanceSummary {
   employeeId: string;
   employeeName: string;
+  clockInTime: string;
   daysPresent: number;
   lateClockIns: number;
   daysAbsent: number;
@@ -336,7 +363,18 @@ const mergeRows = (rows: AttendanceDayRow[]) => {
 };
 
 const buildEmployeeSummary = (rows: AttendanceDayRow[]) => {
-  const employeeTotals = new Map<string, EmployeeAttendanceSummary>();
+  const employeeTotals = new Map<
+    string,
+    {
+      employeeId: string;
+      employeeName: string;
+      daysPresent: number;
+      lateClockIns: number;
+      daysAbsent: number;
+      totalCheckInMinutes: number;
+      checkInSamples: number;
+    }
+  >();
 
   rows.forEach((row) => {
     const key = employeeKeyOf(row.employeeId, row.employeeName);
@@ -346,12 +384,19 @@ const buildEmployeeSummary = (rows: AttendanceDayRow[]) => {
       daysPresent: 0,
       lateClockIns: 0,
       daysAbsent: 0,
+      totalCheckInMinutes: 0,
+      checkInSamples: 0,
     };
 
     if (row.present) {
       current.daysPresent += 1;
       if (row.late) {
         current.lateClockIns += 1;
+      }
+      const checkInMinutes = parseTimeToMinutes(row.checkIn);
+      if (checkInMinutes !== null) {
+        current.totalCheckInMinutes += checkInMinutes;
+        current.checkInSamples += 1;
       }
     } else if (!isWeekendDateKey(row.dateKey)) {
       current.daysAbsent += 1;
@@ -360,9 +405,23 @@ const buildEmployeeSummary = (rows: AttendanceDayRow[]) => {
     employeeTotals.set(key, current);
   });
 
-  return Array.from(employeeTotals.values()).sort((first, second) =>
-    first.employeeName.localeCompare(second.employeeName),
-  );
+  return Array.from(employeeTotals.values())
+    .map((entry): EmployeeAttendanceSummary => {
+      const averageCheckIn =
+        entry.checkInSamples > 0
+          ? Math.round(entry.totalCheckInMinutes / entry.checkInSamples)
+          : null;
+      return {
+        employeeId: entry.employeeId,
+        employeeName: entry.employeeName,
+        clockInTime:
+          averageCheckIn !== null ? minutesToClockLabel(averageCheckIn) : "-",
+        daysPresent: entry.daysPresent,
+        lateClockIns: entry.lateClockIns,
+        daysAbsent: entry.daysAbsent,
+      };
+    })
+    .sort((first, second) => first.employeeName.localeCompare(second.employeeName));
 };
 
 const buildDailyComparison = (rows: AttendanceDayRow[]): DailyAttendancePoint[] => {

@@ -7,6 +7,11 @@ import {
   type AttendanceAnalytics,
 } from "../services/api";
 import {
+  clearAttendanceImportCache,
+  getAttendanceImportCache,
+  setAttendanceImportCache,
+} from "../services/attendanceCache";
+import {
   importAttendanceFromExcel,
   type AttendanceHeatmapData,
   type AttendanceHeatmapStatus,
@@ -27,6 +32,31 @@ const heatmapStatusLabel: Record<AttendanceHeatmapStatus, string> = {
   weekend: "Weekend",
 };
 
+const parseClockToMinutes = (value: string) => {
+  const parsed = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!parsed) {
+    return null;
+  }
+  const hour = Number(parsed[1]);
+  const minute = Number(parsed[2]);
+  if (
+    !Number.isInteger(hour)
+    || !Number.isInteger(minute)
+    || hour < 0
+    || hour > 23
+    || minute < 0
+    || minute > 59
+  ) {
+    return null;
+  }
+  return (hour * 60) + minute;
+};
+
+const toClockLabel = (value: number) =>
+  `${Math.floor(value / 60)
+    .toString()
+    .padStart(2, "0")}:${(value % 60).toString().padStart(2, "0")}`;
+
 const Attendance = () => {
   const [attendanceData, setAttendanceData] = useState<AttendanceAnalytics | null>(
     null,
@@ -41,6 +71,7 @@ const Attendance = () => {
     null,
   );
   const [importInfo, setImportInfo] = useState<string | null>(null);
+  const [cacheExpiresAt, setCacheExpiresAt] = useState<number | null>(null);
 
   const loadDefaultAttendance = useCallback(async () => {
     try {
@@ -56,34 +87,103 @@ const Attendance = () => {
   }, []);
 
   useEffect(() => {
+    const cached = getAttendanceImportCache();
+    if (cached) {
+      setAttendanceData(cached.analytics);
+      setEmployeeSummary(cached.employeeSummary);
+      setHeatmapData(cached.heatmap);
+      setImportInfo(cached.importInfo);
+      setCacheExpiresAt(cached.expiresAt);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     void loadDefaultAttendance();
   }, [loadDefaultAttendance]);
+
+  useEffect(() => {
+    if (!cacheExpiresAt) {
+      return;
+    }
+
+    const remainingMs = cacheExpiresAt - Date.now();
+    if (remainingMs <= 0) {
+      clearAttendanceImportCache();
+      setEmployeeSummary([]);
+      setHeatmapData(null);
+      setImportInfo(null);
+      setCacheExpiresAt(null);
+      void loadDefaultAttendance();
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      clearAttendanceImportCache();
+      setEmployeeSummary([]);
+      setHeatmapData(null);
+      setImportInfo(null);
+      setCacheExpiresAt(null);
+      void loadDefaultAttendance();
+    }, remainingMs);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [cacheExpiresAt, loadDefaultAttendance]);
 
   const fallbackSummary = useMemo(() => {
     if (!attendanceData) {
       return [];
     }
 
-    const summaryMap = new Map<string, EmployeeAttendanceSummary>();
+    const summaryMap = new Map<
+      string,
+      EmployeeAttendanceSummary & {
+        totalClockInMinutes: number;
+        clockInSamples: number;
+      }
+    >();
     attendanceData.records.forEach((record) => {
       const key = record.employeeName.toLowerCase().trim();
       const current = summaryMap.get(key) ?? {
         employeeId: "",
         employeeName: record.employeeName,
+        clockInTime: "-",
         daysPresent: 0,
         lateClockIns: 0,
         daysAbsent: 0,
+        totalClockInMinutes: 0,
+        clockInSamples: 0,
       };
       current.daysPresent += 1;
       if (record.status === "Late") {
         current.lateClockIns += 1;
       }
+      const checkInMinutes = parseClockToMinutes(record.checkIn);
+      if (checkInMinutes !== null) {
+        current.totalClockInMinutes += checkInMinutes;
+        current.clockInSamples += 1;
+      }
       summaryMap.set(key, current);
     });
 
-    return Array.from(summaryMap.values()).sort((first, second) =>
-      first.employeeName.localeCompare(second.employeeName),
-    );
+    return Array.from(summaryMap.values())
+      .map((row): EmployeeAttendanceSummary => {
+        const averageMinutes =
+          row.clockInSamples > 0
+            ? Math.round(row.totalClockInMinutes / row.clockInSamples)
+            : null;
+        return {
+          employeeId: row.employeeId,
+          employeeName: row.employeeName,
+          clockInTime: averageMinutes !== null ? toClockLabel(averageMinutes) : "-",
+          daysPresent: row.daysPresent,
+          lateClockIns: row.lateClockIns,
+          daysAbsent: row.daysAbsent,
+        };
+      })
+      .sort((first, second) => first.employeeName.localeCompare(second.employeeName));
   }, [attendanceData]);
 
   const visibleSummary = employeeSummary.length > 0 ? employeeSummary : fallbackSummary;
@@ -98,12 +198,18 @@ const Attendance = () => {
       setImporting(true);
       setError(null);
       const imported = await importAttendanceFromExcel(files);
+      const summaryInfo = `Imported ${imported.filesProcessed} file(s), ${imported.uniqueDays} day(s), ${imported.totalEmployees} employee(s).`;
+      const cacheEntry = setAttendanceImportCache({
+        analytics: imported.analytics,
+        employeeSummary: imported.employeeSummary,
+        heatmap: imported.heatmap,
+        importInfo: summaryInfo,
+      });
       setAttendanceData(imported.analytics);
       setEmployeeSummary(imported.employeeSummary);
       setHeatmapData(imported.heatmap);
-      setImportInfo(
-        `Imported ${imported.filesProcessed} file(s), ${imported.uniqueDays} day(s), ${imported.totalEmployees} employee(s).`,
-      );
+      setImportInfo(summaryInfo);
+      setCacheExpiresAt(cacheEntry.expiresAt);
     } catch (importError) {
       setError(
         importError instanceof Error
@@ -117,9 +223,11 @@ const Attendance = () => {
   };
 
   const handleResetToSample = async () => {
+    clearAttendanceImportCache();
     setEmployeeSummary([]);
     setHeatmapData(null);
     setImportInfo(null);
+    setCacheExpiresAt(null);
     await loadDefaultAttendance();
   };
 
@@ -199,11 +307,15 @@ const Attendance = () => {
         </section>
       ) : null}
 
-      <AttendanceChart data={attendanceData} employeeSummary={visibleSummary} />
+      <AttendanceChart
+        data={attendanceData}
+        employeeSummary={visibleSummary}
+        heatmapData={heatmapData}
+      />
 
       <section className="card-surface overflow-hidden">
         <div className="border-b border-slate-200/80 px-5 py-4">
-          <h3 className="section-title">Employee-Day Attendance Heatmap</h3>
+          <h3 className="section-title">4) Employee-Day Attendance Heatmap</h3>
           <p className="mt-1 text-xs text-slate-500">
             View daily attendance status per employee across the imported period.
           </p>
@@ -274,6 +386,9 @@ const Attendance = () => {
                   Employee Name
                 </th>
                 <th className="px-5 py-3 text-right font-semibold text-slate-600">
+                  Clock-In Time
+                </th>
+                <th className="px-5 py-3 text-right font-semibold text-slate-600">
                   Days Present
                 </th>
                 <th className="px-5 py-3 text-right font-semibold text-slate-600">
@@ -288,6 +403,9 @@ const Attendance = () => {
               {visibleSummary.map((row) => (
                 <tr key={`${row.employeeId}-${row.employeeName}`}>
                   <td className="px-5 py-3 text-slate-700">{row.employeeName}</td>
+                  <td className="px-5 py-3 text-right font-semibold text-slate-700">
+                    {row.clockInTime ?? "-"}
+                  </td>
                   <td className="px-5 py-3 text-right font-semibold text-emerald-700">
                     {row.daysPresent}
                   </td>

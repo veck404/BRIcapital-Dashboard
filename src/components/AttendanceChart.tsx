@@ -2,26 +2,156 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
+  ComposedChart,
   Legend,
-  Pie,
-  PieChart,
+  Line,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
 import type { AttendanceAnalytics } from "../services/api";
-import type { EmployeeAttendanceSummary } from "../services/attendanceImport";
+import type {
+  AttendanceHeatmapData,
+  EmployeeAttendanceSummary,
+} from "../services/attendanceImport";
 
 interface AttendanceChartProps {
   data: AttendanceAnalytics;
   employeeSummary: EmployeeAttendanceSummary[];
+  heatmapData?: AttendanceHeatmapData | null;
 }
 
-const pieColors = ["#10b981", "#f59e0b", "#f97316"];
+interface CheckInDistributionPoint {
+  label: string;
+  minutes: number;
+  count: number;
+}
 
-const AttendanceChart = ({ data, employeeSummary }: AttendanceChartProps) => {
+const pad2 = (value: number) => value.toString().padStart(2, "0");
+
+const parseTimeToMinutes = (value: string) => {
+  const parsed = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!parsed) {
+    return null;
+  }
+  const hour = Number(parsed[1]);
+  const minute = Number(parsed[2]);
+  if (
+    !Number.isInteger(hour)
+    || !Number.isInteger(minute)
+    || hour < 0
+    || hour > 23
+    || minute < 0
+    || minute > 59
+  ) {
+    return null;
+  }
+  return (hour * 60) + minute;
+};
+
+const minutesToLabel = (minutes: number) =>
+  `${pad2(Math.floor(minutes / 60))}:${pad2(minutes % 60)}`;
+
+const lateRateFromPunctuality = (data: AttendanceAnalytics) => {
+  const late = data.punctuality.find((item) => item.name === "Late")?.value ?? 0;
+  const onTime = data.punctuality.find((item) => item.name === "On Time")?.value ?? 0;
+  const present = onTime + late;
+  if (present <= 0) {
+    return 0;
+  }
+  return Number(((late / present) * 100).toFixed(1));
+};
+
+const buildDailyTrendFromHeatmap = (heatmapData: AttendanceHeatmapData) =>
+  heatmapData.dates
+    .map((date, dateIndex) => {
+      if (date.weekend) {
+        return null;
+      }
+
+      let present = 0;
+      let late = 0;
+      let absent = 0;
+      heatmapData.rows.forEach((employeeRow) => {
+        const cell = employeeRow.cells[dateIndex];
+        if (!cell) {
+          return;
+        }
+        if (cell.status === "present") {
+          present += 1;
+          return;
+        }
+        if (cell.status === "late") {
+          present += 1;
+          late += 1;
+          return;
+        }
+        if (cell.status === "absent") {
+          absent += 1;
+        }
+      });
+
+      return {
+        date: date.label,
+        present,
+        absent,
+        late,
+        lateRate: present > 0 ? Number(((late / present) * 100).toFixed(1)) : 0,
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+const buildDailyTrendFallback = (data: AttendanceAnalytics) => {
+  const fallbackLateRate = lateRateFromPunctuality(data);
+  return data.dailyComparison.map((point) => ({
+    date: point.day,
+    present: point.present,
+    absent: point.absent,
+    late: Math.round((point.present * fallbackLateRate) / 100),
+    lateRate: fallbackLateRate,
+  }));
+};
+
+const buildCheckInDistribution = (records: AttendanceAnalytics["records"]) => {
+  const bucketSizeMinutes = 30;
+  const buckets = new Map<number, number>();
+
+  records.forEach((record) => {
+    const minutes = parseTimeToMinutes(record.checkIn);
+    if (minutes === null) {
+      return;
+    }
+    const bucket = Math.floor(minutes / bucketSizeMinutes) * bucketSizeMinutes;
+    buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+  });
+
+  if (buckets.size === 0) {
+    return [] as CheckInDistributionPoint[];
+  }
+
+  const bucketKeys = Array.from(buckets.keys()).sort((first, second) => first - second);
+  const first = Math.min(bucketKeys[0], 8 * 60);
+  const last = Math.max(bucketKeys[bucketKeys.length - 1], 8 * 60);
+
+  const points: CheckInDistributionPoint[] = [];
+  for (let current = first; current <= last; current += bucketSizeMinutes) {
+    points.push({
+      label: minutesToLabel(current),
+      minutes: current,
+      count: buckets.get(current) ?? 0,
+    });
+  }
+
+  return points;
+};
+
+const AttendanceChart = ({
+  data,
+  employeeSummary,
+  heatmapData,
+}: AttendanceChartProps) => {
   const employeeBreakdown = [...employeeSummary]
     .map((row) => ({
       employeeName: row.employeeName,
@@ -36,31 +166,30 @@ const AttendanceChart = ({ data, employeeSummary }: AttendanceChartProps) => {
         || first.employeeName.localeCompare(second.employeeName),
     );
 
-  const statusMix = (() => {
-    if (employeeBreakdown.length === 0) {
-      return [
-        { name: "On Time", value: data.punctuality.find((item) => item.name === "On Time")?.value ?? 0 },
-        { name: "Late", value: data.punctuality.find((item) => item.name === "Late")?.value ?? 0 },
-        { name: "Absent", value: 0 },
-      ];
-    }
+  const lateLeaderboard = [...employeeSummary]
+    .map((row) => ({
+      employeeName: row.employeeName,
+      lateClockIns: row.lateClockIns,
+    }))
+    .sort(
+      (first, second) =>
+        second.lateClockIns - first.lateClockIns
+        || first.employeeName.localeCompare(second.employeeName),
+    )
+    .slice(0, 10);
 
-    const onTime = employeeBreakdown.reduce((sum, row) => sum + row.onTime, 0);
-    const late = employeeBreakdown.reduce((sum, row) => sum + row.late, 0);
-    const absent = employeeBreakdown.reduce((sum, row) => sum + row.absent, 0);
-    return [
-      { name: "On Time", value: onTime },
-      { name: "Late", value: late },
-      { name: "Absent", value: absent },
-    ];
-  })();
+  const dailyTrend = heatmapData
+    ? buildDailyTrendFromHeatmap(heatmapData)
+    : buildDailyTrendFallback(data);
 
+  const checkInDistribution = buildCheckInDistribution(data.records);
   const breakdownChartHeight = Math.max(280, employeeBreakdown.length * 34);
+  const leaderboardHeight = Math.max(280, lateLeaderboard.length * 34);
 
   return (
-    <div className="grid gap-5 xl:grid-cols-3">
+    <div className="grid gap-5 xl:grid-cols-2">
       <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">Per-Employee Attendance Breakdown</h3>
+        <h3 className="section-title">1) Per-Employee Stacked Attendance</h3>
         <div className="mt-4" style={{ height: breakdownChartHeight }}>
           <ResponsiveContainer width="100%" height={breakdownChartHeight}>
             <BarChart
@@ -69,7 +198,11 @@ const AttendanceChart = ({ data, employeeSummary }: AttendanceChartProps) => {
               margin={{ left: 120, right: 10 }}
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis type="number" allowDecimals={false} tick={{ fill: "#475569", fontSize: 12 }} />
+              <XAxis
+                type="number"
+                allowDecimals={false}
+                tick={{ fill: "#475569", fontSize: 12 }}
+              />
               <YAxis
                 type="category"
                 dataKey="employeeName"
@@ -78,65 +211,146 @@ const AttendanceChart = ({ data, employeeSummary }: AttendanceChartProps) => {
               />
               <Tooltip formatter={(value: number) => `${value} day(s)`} />
               <Legend />
-              <Bar dataKey="onTime" name="On Time" stackId="days" fill="#10b981" radius={[0, 0, 0, 0]} />
-              <Bar dataKey="late" name="Late" stackId="days" fill="#f59e0b" radius={[0, 0, 0, 0]} />
-              <Bar dataKey="absent" name="Absent" stackId="days" fill="#f97316" radius={[0, 8, 8, 0]} />
+              <Bar
+                dataKey="onTime"
+                name="On Time"
+                stackId="days"
+                fill="#10b981"
+                radius={[0, 0, 0, 0]}
+              />
+              <Bar
+                dataKey="late"
+                name="Late"
+                stackId="days"
+                fill="#f59e0b"
+                radius={[0, 0, 0, 0]}
+              />
+              <Bar
+                dataKey="absent"
+                name="Absent"
+                stackId="days"
+                fill="#f97316"
+                radius={[0, 8, 8, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <p className="mt-3 text-xs text-slate-600">
-          Stacked totals per employee for on-time, late, and absent workdays.
-        </p>
       </section>
 
       <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">Daily Attendance (Present vs Absent)</h3>
-        <div className="mt-4 h-72">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data.dailyComparison}>
+        <h3 className="section-title">2) Late Clock-In Leaderboard</h3>
+        <div className="mt-4" style={{ height: leaderboardHeight }}>
+          <ResponsiveContainer width="100%" height={leaderboardHeight}>
+            <BarChart
+              data={lateLeaderboard}
+              layout="vertical"
+              margin={{ left: 120, right: 10 }}
+            >
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="day" tick={{ fill: "#475569", fontSize: 12 }} />
-              <YAxis tick={{ fill: "#475569", fontSize: 12 }} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="present" name="Present" fill="#14b8a6" radius={[8, 8, 0, 0]} />
-              <Bar dataKey="absent" name="Absent" fill="#f97316" radius={[8, 8, 0, 0]} />
+              <XAxis
+                type="number"
+                allowDecimals={false}
+                tick={{ fill: "#475569", fontSize: 12 }}
+              />
+              <YAxis
+                type="category"
+                dataKey="employeeName"
+                width={110}
+                tick={{ fill: "#475569", fontSize: 11 }}
+              />
+              <Tooltip formatter={(value: number) => `${value} late day(s)`} />
+              <Bar
+                dataKey="lateClockIns"
+                name="Late Clock-Ins"
+                fill="#f59e0b"
+                radius={[0, 8, 8, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <p className="mt-3 text-xs text-slate-600">
-          Attendance volume by date across the selected import period.
-        </p>
       </section>
 
       <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">Workday Status Mix</h3>
-        <div className="mt-4 h-72">
+        <h3 className="section-title">3) Daily Trend (Present/Absent + Late %)</h3>
+        <div className="mt-4 h-80">
           <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={statusMix}
-                dataKey="value"
-                nameKey="name"
-                innerRadius={60}
-                outerRadius={95}
-                paddingAngle={4}
-              >
-                {statusMix.map((entry, index) => (
-                  <Cell
-                    key={`${entry.name}-${entry.value}`}
-                    fill={pieColors[index % pieColors.length]}
-                  />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value: number) => `${value} day(s)`} />
+            <ComposedChart data={dailyTrend}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="date" tick={{ fill: "#475569", fontSize: 12 }} />
+              <YAxis
+                yAxisId="count"
+                allowDecimals={false}
+                tick={{ fill: "#475569", fontSize: 12 }}
+              />
+              <YAxis
+                yAxisId="rate"
+                orientation="right"
+                domain={[0, 100]}
+                tick={{ fill: "#475569", fontSize: 12 }}
+                unit="%"
+              />
+              <Tooltip
+                formatter={(value: number, name: string) => {
+                  if (name === "Late Rate") {
+                    return `${value}%`;
+                  }
+                  return `${value} day(s)`;
+                }}
+              />
               <Legend />
-            </PieChart>
+              <Bar
+                yAxisId="count"
+                dataKey="present"
+                name="Present"
+                fill="#14b8a6"
+                radius={[8, 8, 0, 0]}
+              />
+              <Bar
+                yAxisId="count"
+                dataKey="absent"
+                name="Absent"
+                fill="#f97316"
+                radius={[8, 8, 0, 0]}
+              />
+              <Line
+                yAxisId="rate"
+                dataKey="lateRate"
+                name="Late Rate"
+                stroke="#b45309"
+                strokeWidth={2.5}
+                dot={false}
+                activeDot={{ r: 5 }}
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
-        <p className="mt-3 text-xs text-slate-600">
-          Overall distribution of on-time, late, and absent workdays.
-        </p>
+      </section>
+
+      <section className="card-surface p-4 sm:p-5">
+        <h3 className="section-title">5) Check-In Time Distribution</h3>
+        <div className="mt-4 h-80">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={checkInDistribution}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="label" tick={{ fill: "#475569", fontSize: 12 }} />
+              <YAxis allowDecimals={false} tick={{ fill: "#475569", fontSize: 12 }} />
+              <Tooltip formatter={(value: number) => `${value} check-in(s)`} />
+              <Legend />
+              <ReferenceLine
+                x="08:00"
+                stroke="#dc2626"
+                strokeDasharray="4 4"
+                label={{ value: "Late Cutoff 08:00", position: "insideTopRight", fill: "#b91c1c", fontSize: 11 }}
+              />
+              <Bar
+                dataKey="count"
+                name="Check-In Count"
+                fill="#0ea5e9"
+                radius={[8, 8, 0, 0]}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       </section>
     </div>
   );
