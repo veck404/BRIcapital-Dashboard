@@ -1004,10 +1004,10 @@ const Attendance = () => {
     analysisTab === "distribution" ? "distribution" : "trend";
 
   return (
-    <section className="space-y-5">
-      <section className="sticky top-16 z-20 rounded-2xl border border-slate-200/80 bg-white/95 px-4 py-4 shadow-soft backdrop-blur sm:px-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="space-y-2">
+    <section className="space-y-6">
+      <section className="sticky top-16 z-20 rounded-2xl border border-slate-200/80 bg-white/95 px-5 py-5 shadow-soft backdrop-blur sm:px-6">
+        <div className="grid gap-5 xl:grid-cols-[minmax(280px,1fr)_minmax(540px,auto)] xl:items-start">
+          <div className="max-w-2xl space-y-2.5">
             <h3 className="section-title">Attendance Analytics Workspace</h3>
             <div className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
               <CalendarDays size={14} />
@@ -1019,8 +1019,8 @@ const Attendance = () => {
             ) : null}
           </div>
 
-          <div className="space-y-3 lg:max-w-[720px]">
-            <div className="flex flex-wrap gap-2">
+          <div className="w-full space-y-3 xl:justify-self-end">
+            <div className="flex flex-wrap items-center gap-2.5">
               {rangePresets.map((preset) => (
                 <button
                   key={preset.value}
@@ -1039,7 +1039,7 @@ const Attendance = () => {
               ))}
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2.5">
               <label
                 className={`inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition ${
                   importing
@@ -1096,31 +1096,31 @@ const Attendance = () => {
         </section>
       ) : null}
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <article className="card-surface px-4 py-3">
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <article className="card-surface flex min-h-[100px] flex-col justify-center px-5 py-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Present Rate</p>
           <p className="mt-1 text-2xl font-semibold text-emerald-700">{kpis.presentRate}%</p>
         </article>
-        <article className="card-surface px-4 py-3">
+        <article className="card-surface flex min-h-[100px] flex-col justify-center px-5 py-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Late Rate</p>
           <p className="mt-1 text-2xl font-semibold text-amber-700">{kpis.lateRate}%</p>
         </article>
-        <article className="card-surface px-4 py-3">
+        <article className="card-surface flex min-h-[100px] flex-col justify-center px-5 py-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Absence Rate</p>
           <p className="mt-1 text-2xl font-semibold text-rose-700">{kpis.absenceRate}%</p>
         </article>
-        <article className="card-surface px-4 py-3">
+        <article className="card-surface flex min-h-[100px] flex-col justify-center px-5 py-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Avg Clock-In</p>
           <p className="mt-1 text-2xl font-semibold text-slate-800">{kpis.avgClockIn}</p>
         </article>
-        <article className="card-surface px-4 py-3">
+        <article className="card-surface flex min-h-[100px] flex-col justify-center px-5 py-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total Staff</p>
           <p className="mt-1 text-2xl font-semibold text-slate-800">{kpis.staffCount}</p>
         </article>
       </section>
 
       <section className="card-surface overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-slate-200/80 px-4 py-4 sm:px-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-col gap-4 border-b border-slate-200/80 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h3 className="section-title">Primary Analysis</h3>
             <p className="mt-1 text-xs text-slate-500">
@@ -1128,7 +1128,7 @@ const Attendance = () => {
             </p>
           </div>
 
-          <div className="inline-flex w-full max-w-md rounded-xl border border-slate-200 bg-slate-50 p-1">
+          <div className="grid w-full grid-cols-3 rounded-xl border border-slate-200 bg-slate-50 p-1 lg:max-w-xl">
             {analysisTabs.map((tab) => (
               <button
                 key={tab.value}
@@ -1136,7 +1136,7 @@ const Attendance = () => {
                 onClick={() => {
                   setAnalysisTab(tab.value);
                 }}
-                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${
+                className={`rounded-lg px-3 py-2.5 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${
                   analysisTab === tab.value
                     ? "bg-white text-sky-700 shadow-sm"
                     : "text-slate-600 hover:text-slate-800"
