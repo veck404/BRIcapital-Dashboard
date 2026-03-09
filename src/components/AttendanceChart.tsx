@@ -193,6 +193,18 @@ const AttendanceChart = ({
     )
     .slice(0, 10);
 
+  const punctualLeaderboard = [...employeeSummary]
+    .map((row) => ({
+      employeeName: row.employeeName,
+      onTimeClockIns: Math.max(row.daysPresent - row.lateClockIns, 0),
+    }))
+    .sort(
+      (first, second) =>
+        second.onTimeClockIns - first.onTimeClockIns
+        || first.employeeName.localeCompare(second.employeeName),
+    )
+    .slice(0, 10);
+
   const dailyTrend = heatmapData
     ? buildDailyTrendFromHeatmap(heatmapData)
     : buildDailyTrendFallback(data);
@@ -200,6 +212,7 @@ const AttendanceChart = ({
   const timeDistribution = buildTimeDistribution(data.records);
   const breakdownChartHeight = Math.max(280, employeeBreakdown.length * 34);
   const leaderboardHeight = Math.max(280, lateLeaderboard.length * 34);
+  const punctualLeaderboardHeight = Math.max(280, punctualLeaderboard.length * 34);
 
   return (
     <div className="grid gap-5 xl:grid-cols-2">
@@ -283,6 +296,41 @@ const AttendanceChart = ({
             </BarChart>
           </ResponsiveContainer>
         </div>
+
+        <div className="mt-2">
+          <h4 className="text-sm font-semibold text-slate-700">
+            Punctual Clock-In Leaderboard
+          </h4>
+          <div className="mt-3" style={{ height: punctualLeaderboardHeight }}>
+            <ResponsiveContainer width="100%" height={punctualLeaderboardHeight}>
+              <BarChart
+                data={punctualLeaderboard}
+                layout="vertical"
+                margin={{ left: 120, right: 10 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis
+                  type="number"
+                  allowDecimals={false}
+                  tick={{ fill: "#475569", fontSize: 12 }}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="employeeName"
+                  width={110}
+                  tick={{ fill: "#475569", fontSize: 11 }}
+                />
+                <Tooltip formatter={(value: number) => `${value} on-time day(s)`} />
+                <Bar
+                  dataKey="onTimeClockIns"
+                  name="On-Time Clock-Ins"
+                  fill="#10b981"
+                  radius={[0, 8, 8, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
       </section>
 
       <section className="card-surface p-4 sm:p-5">
@@ -348,7 +396,11 @@ const AttendanceChart = ({
         </p>
         <div className="mt-4 h-80">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={timeDistribution}>
+            <BarChart
+              data={timeDistribution}
+              barCategoryGap="8%"
+              barGap={2}
+            >
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="label" tick={{ fill: "#475569", fontSize: 12 }} />
               <YAxis allowDecimals={false} tick={{ fill: "#475569", fontSize: 12 }} />
@@ -375,16 +427,19 @@ const AttendanceChart = ({
                 name="Check-In Count"
                 fill="#0ea5e9"
                 radius={[8, 8, 0, 0]}
+                barSize={18}
               />
               <Bar
                 dataKey="checkOutCount"
                 name="Check-Out Count"
                 fill="#7c3aed"
                 radius={[8, 8, 0, 0]}
+                barSize={18}
               />
             </BarChart>
           </ResponsiveContainer>
         </div>
+
       </section>
     </div>
   );
