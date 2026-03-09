@@ -544,18 +544,17 @@ class RouterCollector:
         }
 
     def _build_traffic_distribution(self, device_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Build percentage distribution from top device usage."""
+        """Build absolute volume distribution from top device usage."""
 
         rows = [row for row in device_rows[:5] if row["bandwidthGb"] > 0]
-        total = sum(row["bandwidthGb"] for row in rows)
-        if total <= 0:
+        if not rows:
             return [
-                {"name": "No Traffic", "value": 100},
+                {"name": "No Traffic", "value": 0.0},
             ]
         return [
             {
                 "name": row["deviceName"][:22],
-                "value": round((row["bandwidthGb"] / total) * 100, 1),
+                "value": round_gb(row["bandwidthGb"]),
             }
             for row in rows
         ]
@@ -1137,7 +1136,7 @@ class RouterCollector:
             "network": {
                 "topDevices": [],
                 "usageOverTime": list(self._usage_history),
-                "trafficDistribution": [{"name": "No Traffic", "value": 100}],
+                "trafficDistribution": [{"name": "No Traffic", "value": 0.0}],
                 "perDeviceMode": self._per_device_mode,
                 "totalBandwidthTodayGb": round_gb(self._daily_total_gb),
                 "devices": [],

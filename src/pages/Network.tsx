@@ -42,8 +42,8 @@ const filterBusinessHours = (
         return true;
       }
 
-      const totalMinutes = (hour * 60) + minute;
-      return totalMinutes >= (8 * 60) && totalMinutes <= (17 * 60);
+      const totalMinutes = hour * 60 + minute;
+      return totalMinutes >= 8 * 60 && totalMinutes <= 17 * 60;
     }
     return true;
   });
@@ -335,9 +335,10 @@ const Network = () => {
         ? "Daily Bandwidth Usage (Last 30 Days)"
         : "Bandwidth Usage Today (8:00 AM - 5:00 PM)";
 
-  const usageRangeLabel = state.interval !== "today" && state.usageHistory
-    ? `${prettyDate(state.usageHistory.rangeStart)} to ${prettyDate(state.usageHistory.rangeEnd)}`
-    : undefined;
+  const usageRangeLabel =
+    state.interval !== "today" && state.usageHistory
+      ? `${prettyDate(state.usageHistory.rangeStart)} to ${prettyDate(state.usageHistory.rangeEnd)}`
+      : undefined;
 
   const totalBandwidthTodayGb =
     state.networkData.totalBandwidthTodayGb ??

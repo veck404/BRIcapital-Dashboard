@@ -467,6 +467,14 @@ const mockTotalBandwidthTodayGb = Number(
 const usageOverTime: UsageOverTimePoint[] =
   mockIntradayUsageHistory.length > 0 ? mockIntradayUsageHistory : mockDailyHistory.points;
 
+const mockTrafficDistributionRatios: Array<{ name: string; ratio: number }> = [
+  { name: "Workstations", ratio: 0.38 },
+  { name: "Servers", ratio: 0.31 },
+  { name: "Mobile", ratio: 0.15 },
+  { name: "IoT", ratio: 0.09 },
+  { name: "Other", ratio: 0.07 },
+];
+
 const networkPayload: NetworkAnalytics = {
   topDevices: [...devices]
     .sort((first, second) => second.bandwidthGb - first.bandwidthGb)
@@ -476,13 +484,10 @@ const networkPayload: NetworkAnalytics = {
       bandwidthGb: device.bandwidthGb,
     })),
   usageOverTime,
-  trafficDistribution: [
-    { name: "Workstations", value: 38 },
-    { name: "Servers", value: 31 },
-    { name: "Mobile", value: 15 },
-    { name: "IoT", value: 9 },
-    { name: "Other", value: 7 },
-  ],
+  trafficDistribution: mockTrafficDistributionRatios.map(({ name, ratio }) => ({
+    name,
+    value: Number((mockTotalBandwidthTodayGb * ratio).toFixed(3)),
+  })),
   totalBandwidthTodayGb: mockTotalBandwidthTodayGb,
   devices,
 };

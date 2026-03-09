@@ -1,11 +1,9 @@
-import { Bell, Menu, Moon, Sun } from "lucide-react";
+import { Bell, Menu } from "lucide-react";
 import { useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 interface TopbarProps {
   onToggleSidebar: () => void;
-  theme: "light" | "dark";
-  onToggleTheme: () => void;
 }
 
 const pageTitles: Record<string, string> = {
@@ -14,7 +12,7 @@ const pageTitles: Record<string, string> = {
   "/network": "Network Usage",
 };
 
-const Topbar = ({ onToggleSidebar, theme, onToggleTheme }: TopbarProps) => {
+const Topbar = ({ onToggleSidebar }: TopbarProps) => {
   const location = useLocation();
 
   const today = useMemo(
@@ -49,18 +47,6 @@ const Topbar = ({ onToggleSidebar, theme, onToggleTheme }: TopbarProps) => {
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onToggleTheme}
-            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:border-slate-600 dark:hover:bg-slate-800"
-            aria-pressed={theme === "dark"}
-            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-          >
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-            <span className="hidden sm:inline">
-              {theme === "dark" ? "Light" : "Dark"}
-            </span>
-          </button>
           <button
             type="button"
             className="relative rounded-xl border border-slate-200 bg-white p-2 text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-800"

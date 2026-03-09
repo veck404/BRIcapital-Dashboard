@@ -24,30 +24,8 @@ interface NetworkUsageChartProps {
 }
 
 const pieColors = ["#0ea5e9", "#14b8a6", "#f59e0b", "#6366f1", "#f97316"];
-
-const CustomTooltip = ({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: Array<{ value: number; name: string; fill?: string }>;
-  label?: string;
-}) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="rounded-lg bg-white p-3 shadow-lg ring-1 ring-slate-200">
-        <p className="text-xs font-semibold text-slate-900">{label}</p>
-        {payload.map((entry, index) => (
-          <p key={`item-${index}`} className="text-xs text-slate-600">
-            {entry.name}: {entry.value} GB
-          </p>
-        ))}
-      </div>
-    );
-  }
-  return null;
-};
+const formatVolumeGb = (value: number) =>
+  `${value.toLocaleString(undefined, { maximumFractionDigits: 3 })} GB`;
 
 const NetworkUsageChart = ({
   data,
@@ -222,7 +200,7 @@ const NetworkUsageChart = ({
                   border: "1px solid #e2e8f0",
                   borderRadius: "0.5rem",
                 }}
-                formatter={(value: number) => `${value}%`}
+                formatter={(value: number) => formatVolumeGb(value)}
                 labelFormatter={(label) => `${label}`}
               />
               <Legend

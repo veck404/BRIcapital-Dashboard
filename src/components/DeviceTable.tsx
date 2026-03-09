@@ -120,7 +120,7 @@ const DeviceTable = ({ devices }: DeviceTableProps) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200/70" role="rowgroup">
-              {sortedDevices.map((device, index) => {
+              {sortedDevices.map((device) => {
                 const bandwidth = parseFloat(device.bandwidthGb.toString());
                 const percentageOfTotal =
                   totalBandwidth > 0
