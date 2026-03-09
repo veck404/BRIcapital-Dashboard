@@ -19,7 +19,7 @@ const DashboardLayout = () => {
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-slate-100 transition-colors dark:bg-slate-950">
-      <div className="pointer-events-none absolute inset-x-0 top-0 -z-0 h-52 bg-gradient-to-r from-cyan-100 via-teal-50 to-sky-100 blur-3xl dark:from-sky-900/40 dark:via-teal-900/30 dark:to-indigo-900/35" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 -z-0 h-52 bg-gradient-to-r from-[#f6eaf7] via-[#fdf7ff] to-[#fff4cf] blur-3xl dark:from-sky-900/40 dark:via-teal-900/30 dark:to-indigo-900/35" />
       <div className="relative z-10 flex">
         <Sidebar
           isOpen={isSidebarOpen}
