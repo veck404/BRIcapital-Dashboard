@@ -25,6 +25,8 @@ export interface PunctualityPoint {
 }
 
 export interface AttendanceRecord {
+  date: string;
+  employeeId?: string;
   employeeName: string;
   checkIn: string;
   checkOut: string;
@@ -92,22 +94,24 @@ export interface RouterSnapshot {
   error?: string | null;
 }
 
+const sampleAttendanceDate = new Date().toISOString().slice(0, 10);
+
 const employeeRecords: AttendanceRecord[] = [
-  { employeeName: "Emma Johnson", checkIn: "08:41", checkOut: "17:39", status: "On Time" },
-  { employeeName: "Liam Smith", checkIn: "09:08", checkOut: "18:05", status: "Late" },
-  { employeeName: "Olivia Brown", checkIn: "08:49", checkOut: "17:47", status: "On Time" },
-  { employeeName: "Noah Davis", checkIn: "09:11", checkOut: "18:22", status: "Late" },
-  { employeeName: "Sophia Wilson", checkIn: "08:55", checkOut: "17:51", status: "On Time" },
-  { employeeName: "Mason Taylor", checkIn: "08:58", checkOut: "17:56", status: "On Time" },
-  { employeeName: "Isabella Moore", checkIn: "09:13", checkOut: "18:09", status: "Late" },
-  { employeeName: "Ethan Anderson", checkIn: "08:47", checkOut: "17:38", status: "On Time" },
-  { employeeName: "Mia Thomas", checkIn: "08:53", checkOut: "17:49", status: "On Time" },
-  { employeeName: "James Martinez", checkIn: "09:05", checkOut: "18:02", status: "Late" },
-  { employeeName: "Amelia Jackson", checkIn: "08:46", checkOut: "17:42", status: "On Time" },
-  { employeeName: "Benjamin White", checkIn: "08:59", checkOut: "17:55", status: "On Time" },
-  { employeeName: "Harper Harris", checkIn: "09:10", checkOut: "18:18", status: "Late" },
-  { employeeName: "Lucas Thompson", checkIn: "08:44", checkOut: "17:35", status: "On Time" },
-  { employeeName: "Evelyn Garcia", checkIn: "09:06", checkOut: "18:01", status: "Late" },
+  { date: sampleAttendanceDate, employeeName: "Emma Johnson", checkIn: "08:41", checkOut: "17:39", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "Liam Smith", checkIn: "09:08", checkOut: "18:05", status: "Late" },
+  { date: sampleAttendanceDate, employeeName: "Olivia Brown", checkIn: "08:49", checkOut: "17:47", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "Noah Davis", checkIn: "09:11", checkOut: "18:22", status: "Late" },
+  { date: sampleAttendanceDate, employeeName: "Sophia Wilson", checkIn: "08:55", checkOut: "17:51", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "Mason Taylor", checkIn: "08:58", checkOut: "17:56", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "Isabella Moore", checkIn: "09:13", checkOut: "18:09", status: "Late" },
+  { date: sampleAttendanceDate, employeeName: "Ethan Anderson", checkIn: "08:47", checkOut: "17:38", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "Mia Thomas", checkIn: "08:53", checkOut: "17:49", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "James Martinez", checkIn: "09:05", checkOut: "18:02", status: "Late" },
+  { date: sampleAttendanceDate, employeeName: "Amelia Jackson", checkIn: "08:46", checkOut: "17:42", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "Benjamin White", checkIn: "08:59", checkOut: "17:55", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "Harper Harris", checkIn: "09:10", checkOut: "18:18", status: "Late" },
+  { date: sampleAttendanceDate, employeeName: "Lucas Thompson", checkIn: "08:44", checkOut: "17:35", status: "On Time" },
+  { date: sampleAttendanceDate, employeeName: "Evelyn Garcia", checkIn: "09:06", checkOut: "18:01", status: "Late" },
 ];
 
 const devices: DeviceRecord[] = [

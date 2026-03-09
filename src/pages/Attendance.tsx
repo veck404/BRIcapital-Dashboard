@@ -1,6 +1,6 @@
-import { RotateCcw, Upload } from "lucide-react";
+import { RotateCcw, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import AttendanceChart from "../components/AttendanceChart";
 import {
   fetchAttendanceAnalytics,
@@ -57,6 +57,51 @@ const toClockLabel = (value: number) =>
     .toString()
     .padStart(2, "0")}:${(value % 60).toString().padStart(2, "0")}`;
 
+type ModalAttendanceStatus = "On Time" | "Late" | "Absent" | "Weekend";
+
+interface EmployeeModalRecord {
+  dateKey: string;
+  dateLabel: string;
+  checkIn: string;
+  checkOut: string;
+  status: ModalAttendanceStatus;
+}
+
+const normalizeEmployeeName = (value: string) =>
+  value.toLowerCase().replace(/\s+/g, " ").trim();
+
+const summaryKey = (row: Pick<EmployeeAttendanceSummary, "employeeId" | "employeeName">) =>
+  row.employeeId
+    ? `${row.employeeId}::${normalizeEmployeeName(row.employeeName)}`
+    : `name::${normalizeEmployeeName(row.employeeName)}`;
+
+const recordKey = (
+  record: Pick<AttendanceAnalytics["records"][number], "employeeId" | "employeeName">,
+) =>
+  record.employeeId
+    ? `${record.employeeId}::${normalizeEmployeeName(record.employeeName)}`
+    : `name::${normalizeEmployeeName(record.employeeName)}`;
+
+const toLongDateLabel = (dateKey: string) => {
+  const parsed = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return dateKey;
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(parsed);
+};
+
+const modalStatusPillClass: Record<ModalAttendanceStatus, string> = {
+  "On Time": "bg-emerald-100 text-emerald-700",
+  Late: "bg-amber-100 text-amber-700",
+  Absent: "bg-rose-100 text-rose-700",
+  Weekend: "bg-slate-100 text-slate-600",
+};
+
 const Attendance = () => {
   const [attendanceData, setAttendanceData] = useState<AttendanceAnalytics | null>(
     null,
@@ -72,6 +117,9 @@ const Attendance = () => {
   );
   const [importInfo, setImportInfo] = useState<string | null>(null);
   const [cacheExpiresAt, setCacheExpiresAt] = useState<number | null>(null);
+  const [selectedEmployeeKey, setSelectedEmployeeKey] = useState<string | null>(
+    null,
+  );
 
   const loadDefaultAttendance = useCallback(async () => {
     try {
@@ -114,6 +162,7 @@ const Attendance = () => {
       setHeatmapData(null);
       setImportInfo(null);
       setCacheExpiresAt(null);
+      setSelectedEmployeeKey(null);
       void loadDefaultAttendance();
       return;
     }
@@ -124,6 +173,7 @@ const Attendance = () => {
       setHeatmapData(null);
       setImportInfo(null);
       setCacheExpiresAt(null);
+      setSelectedEmployeeKey(null);
       void loadDefaultAttendance();
     }, remainingMs);
 
@@ -131,6 +181,23 @@ const Attendance = () => {
       window.clearTimeout(timer);
     };
   }, [cacheExpiresAt, loadDefaultAttendance]);
+
+  useEffect(() => {
+    if (!selectedEmployeeKey) {
+      return;
+    }
+
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedEmployeeKey(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleEsc);
+    return () => {
+      window.removeEventListener("keydown", handleEsc);
+    };
+  }, [selectedEmployeeKey]);
 
   const fallbackSummary = useMemo(() => {
     if (!attendanceData) {
@@ -145,9 +212,9 @@ const Attendance = () => {
       }
     >();
     attendanceData.records.forEach((record) => {
-      const key = record.employeeName.toLowerCase().trim();
+      const key = recordKey(record);
       const current = summaryMap.get(key) ?? {
-        employeeId: "",
+        employeeId: record.employeeId ?? "",
         employeeName: record.employeeName,
         clockInTime: "-",
         daysPresent: 0,
@@ -188,6 +255,114 @@ const Attendance = () => {
 
   const visibleSummary = employeeSummary.length > 0 ? employeeSummary : fallbackSummary;
 
+  const recordsByEmployee = useMemo(() => {
+    const grouped = new Map<string, AttendanceAnalytics["records"]>();
+    if (!attendanceData) {
+      return grouped;
+    }
+
+    attendanceData.records.forEach((record) => {
+      const key = recordKey(record);
+      const current = grouped.get(key) ?? [];
+      current.push(record);
+      grouped.set(key, current);
+    });
+
+    grouped.forEach((records, key) => {
+      grouped.set(
+        key,
+        [...records].sort((first, second) => second.date.localeCompare(first.date)),
+      );
+    });
+
+    return grouped;
+  }, [attendanceData]);
+
+  const selectedEmployeeSummary = useMemo(
+    () =>
+      selectedEmployeeKey
+        ? visibleSummary.find((row) => summaryKey(row) === selectedEmployeeKey) ?? null
+        : null,
+    [selectedEmployeeKey, visibleSummary],
+  );
+
+  const selectedEmployeeRecords = useMemo<EmployeeModalRecord[]>(() => {
+    if (!selectedEmployeeSummary) {
+      return [];
+    }
+
+    const key = summaryKey(selectedEmployeeSummary);
+    const records = recordsByEmployee.get(key) ?? [];
+    const recordsByDate = new Map<string, AttendanceAnalytics["records"][number]>();
+    records.forEach((record) => {
+      if (!recordsByDate.has(record.date)) {
+        recordsByDate.set(record.date, record);
+      }
+    });
+
+    if (heatmapData) {
+      const targetRow = heatmapData.rows.find(
+        (row) =>
+          normalizeEmployeeName(row.employeeName)
+            === normalizeEmployeeName(selectedEmployeeSummary.employeeName)
+          && (
+            !selectedEmployeeSummary.employeeId
+            || !row.employeeId
+            || row.employeeId === selectedEmployeeSummary.employeeId
+          ),
+      );
+
+      if (targetRow) {
+        return heatmapData.dates
+          .map((date, index) => {
+            const existingRecord = recordsByDate.get(date.dateKey);
+            const cellStatus = targetRow.cells[index]?.status;
+            const status: ModalAttendanceStatus =
+              cellStatus === "late"
+                ? "Late"
+                : cellStatus === "present"
+                  ? "On Time"
+                  : cellStatus === "weekend"
+                    ? "Weekend"
+                    : "Absent";
+
+            return {
+              dateKey: date.dateKey,
+              dateLabel: toLongDateLabel(date.dateKey),
+              checkIn: existingRecord?.checkIn ?? "-",
+              checkOut: existingRecord?.checkOut ?? "-",
+              status,
+            };
+          })
+          .sort((first, second) => second.dateKey.localeCompare(first.dateKey));
+      }
+    }
+
+    return records
+      .map((record) => ({
+        dateKey: record.date,
+        dateLabel: toLongDateLabel(record.date),
+        checkIn: record.checkIn,
+        checkOut: record.checkOut,
+        status: record.status,
+      }))
+      .sort((first, second) => second.dateKey.localeCompare(first.dateKey));
+  }, [heatmapData, recordsByEmployee, selectedEmployeeSummary]);
+
+  const openEmployeeModal = (row: EmployeeAttendanceSummary) => {
+    setSelectedEmployeeKey(summaryKey(row));
+  };
+
+  const handleSummaryRowKeyDown = (
+    event: ReactKeyboardEvent<HTMLTableRowElement>,
+    row: EmployeeAttendanceSummary,
+  ) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openEmployeeModal(row);
+    }
+  };
+
   const handleFileImport = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files ? Array.from(event.target.files) : [];
     if (files.length === 0) {
@@ -210,6 +385,7 @@ const Attendance = () => {
       setHeatmapData(imported.heatmap);
       setImportInfo(summaryInfo);
       setCacheExpiresAt(cacheEntry.expiresAt);
+      setSelectedEmployeeKey(null);
     } catch (importError) {
       setError(
         importError instanceof Error
@@ -228,6 +404,7 @@ const Attendance = () => {
     setHeatmapData(null);
     setImportInfo(null);
     setCacheExpiresAt(null);
+    setSelectedEmployeeKey(null);
     await loadDefaultAttendance();
   };
 
@@ -376,6 +553,9 @@ const Attendance = () => {
       <div className="card-surface overflow-hidden">
         <div className="border-b border-slate-200/80 px-5 py-4">
           <h3 className="section-title">Employee Attendance Summary</h3>
+          <p className="mt-1 text-xs text-slate-500">
+            Click any row to view that employee&apos;s detailed attendance record.
+          </p>
         </div>
 
         <div className="overflow-x-auto">
@@ -401,8 +581,24 @@ const Attendance = () => {
             </thead>
             <tbody className="divide-y divide-slate-200/70">
               {visibleSummary.map((row) => (
-                <tr key={`${row.employeeId}-${row.employeeName}`}>
-                  <td className="px-5 py-3 text-slate-700">{row.employeeName}</td>
+                <tr
+                  key={`${row.employeeId}-${row.employeeName}`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    openEmployeeModal(row);
+                  }}
+                  onKeyDown={(event) => {
+                    handleSummaryRowKeyDown(event, row);
+                  }}
+                  className="cursor-pointer transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/60"
+                  aria-label={`Open attendance record for ${row.employeeName}`}
+                >
+                  <td className="px-5 py-3 text-slate-700">
+                    <span className="font-semibold text-sky-700 underline decoration-sky-300 underline-offset-4">
+                      {row.employeeName}
+                    </span>
+                  </td>
                   <td className="px-5 py-3 text-right font-semibold text-slate-700">
                     {row.clockInTime ?? "-"}
                   </td>
@@ -421,6 +617,82 @@ const Attendance = () => {
           </table>
         </div>
       </div>
+
+      {selectedEmployeeSummary ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6"
+          onClick={() => {
+            setSelectedEmployeeKey(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="employee-record-modal-title"
+            className="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+            onClick={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            <div className="flex items-start justify-between border-b border-slate-200/80 px-5 py-4">
+              <div>
+                <h4
+                  id="employee-record-modal-title"
+                  className="font-heading text-lg font-semibold text-slate-900"
+                >
+                  {selectedEmployeeSummary.employeeName}
+                </h4>
+                <p className="mt-1 text-xs text-slate-500">
+                  Individual attendance record
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedEmployeeKey(null);
+                }}
+                className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close attendance record"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="max-h-[65vh] overflow-auto">
+              {selectedEmployeeRecords.length > 0 ? (
+                <table className="min-w-full divide-y divide-slate-200/80 text-sm">
+                  <thead className="bg-slate-50/70">
+                    <tr>
+                      <th className="px-5 py-3 text-left font-semibold text-slate-600">Date</th>
+                      <th className="px-5 py-3 text-right font-semibold text-slate-600">Check-In</th>
+                      <th className="px-5 py-3 text-right font-semibold text-slate-600">Check-Out</th>
+                      <th className="px-5 py-3 text-right font-semibold text-slate-600">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200/70">
+                    {selectedEmployeeRecords.map((record) => (
+                      <tr key={`${selectedEmployeeSummary.employeeName}-${record.dateKey}`}>
+                        <td className="px-5 py-3 text-slate-700">{record.dateLabel}</td>
+                        <td className="px-5 py-3 text-right font-semibold text-slate-700">{record.checkIn}</td>
+                        <td className="px-5 py-3 text-right font-semibold text-slate-700">{record.checkOut}</td>
+                        <td className="px-5 py-3 text-right">
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${modalStatusPillClass[record.status]}`}>
+                            {record.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="px-5 py-8 text-sm text-slate-500">
+                  No attendance rows found for this employee in the current data set.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 };

@@ -489,6 +489,8 @@ const buildRecords = (rows: AttendanceDayRow[]): AttendanceRecord[] =>
       ),
     )
     .map((row) => ({
+      date: row.dateKey,
+      employeeId: row.employeeId,
       employeeName: row.employeeName,
       checkIn: row.checkIn,
       checkOut: row.checkOut,
