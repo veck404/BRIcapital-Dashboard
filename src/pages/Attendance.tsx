@@ -1,6 +1,7 @@
 import { RotateCcw, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import AttendanceChart from "../components/AttendanceChart";
 import {
   fetchAttendanceAnalytics,
@@ -618,81 +619,84 @@ const Attendance = () => {
         </div>
       </div>
 
-      {selectedEmployeeSummary ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 px-4 py-6"
-          onClick={() => {
-            setSelectedEmployeeKey(null);
-          }}
-        >
+      {selectedEmployeeSummary
+        ? createPortal(
           <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="employee-record-modal-title"
-            className="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
-            onClick={(event) => {
-              event.stopPropagation();
+            className="fixed inset-0 z-[999] flex items-center justify-center bg-slate-950/45 px-4 py-6"
+            onClick={() => {
+              setSelectedEmployeeKey(null);
             }}
           >
-            <div className="flex items-start justify-between border-b border-slate-200/80 px-5 py-4">
-              <div>
-                <h4
-                  id="employee-record-modal-title"
-                  className="font-heading text-lg font-semibold text-slate-900"
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="employee-record-modal-title"
+              className="w-full max-w-4xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+              onClick={(event) => {
+                event.stopPropagation();
+              }}
+            >
+              <div className="flex items-start justify-between border-b border-slate-200/80 px-5 py-4">
+                <div>
+                  <h4
+                    id="employee-record-modal-title"
+                    className="font-heading text-lg font-semibold text-slate-900"
+                  >
+                    {selectedEmployeeSummary.employeeName}
+                  </h4>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Individual attendance record
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedEmployeeKey(null);
+                  }}
+                  className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+                  aria-label="Close attendance record"
                 >
-                  {selectedEmployeeSummary.employeeName}
-                </h4>
-                <p className="mt-1 text-xs text-slate-500">
-                  Individual attendance record
-                </p>
+                  <X size={18} />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedEmployeeKey(null);
-                }}
-                className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
-                aria-label="Close attendance record"
-              >
-                <X size={18} />
-              </button>
-            </div>
 
-            <div className="max-h-[65vh] overflow-auto">
-              {selectedEmployeeRecords.length > 0 ? (
-                <table className="min-w-full divide-y divide-slate-200/80 text-sm">
-                  <thead className="bg-slate-50/70">
-                    <tr>
-                      <th className="px-5 py-3 text-left font-semibold text-slate-600">Date</th>
-                      <th className="px-5 py-3 text-right font-semibold text-slate-600">Check-In</th>
-                      <th className="px-5 py-3 text-right font-semibold text-slate-600">Check-Out</th>
-                      <th className="px-5 py-3 text-right font-semibold text-slate-600">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200/70">
-                    {selectedEmployeeRecords.map((record) => (
-                      <tr key={`${selectedEmployeeSummary.employeeName}-${record.dateKey}`}>
-                        <td className="px-5 py-3 text-slate-700">{record.dateLabel}</td>
-                        <td className="px-5 py-3 text-right font-semibold text-slate-700">{record.checkIn}</td>
-                        <td className="px-5 py-3 text-right font-semibold text-slate-700">{record.checkOut}</td>
-                        <td className="px-5 py-3 text-right">
-                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${modalStatusPillClass[record.status]}`}>
-                            {record.status}
-                          </span>
-                        </td>
+              <div className="max-h-[65vh] overflow-auto">
+                {selectedEmployeeRecords.length > 0 ? (
+                  <table className="min-w-full divide-y divide-slate-200/80 text-sm">
+                    <thead className="bg-slate-50/70">
+                      <tr>
+                        <th className="px-5 py-3 text-left font-semibold text-slate-600">Date</th>
+                        <th className="px-5 py-3 text-right font-semibold text-slate-600">Check-In</th>
+                        <th className="px-5 py-3 text-right font-semibold text-slate-600">Check-Out</th>
+                        <th className="px-5 py-3 text-right font-semibold text-slate-600">Status</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <p className="px-5 py-8 text-sm text-slate-500">
-                  No attendance rows found for this employee in the current data set.
-                </p>
-              )}
+                    </thead>
+                    <tbody className="divide-y divide-slate-200/70">
+                      {selectedEmployeeRecords.map((record) => (
+                        <tr key={`${selectedEmployeeSummary.employeeName}-${record.dateKey}`}>
+                          <td className="px-5 py-3 text-slate-700">{record.dateLabel}</td>
+                          <td className="px-5 py-3 text-right font-semibold text-slate-700">{record.checkIn}</td>
+                          <td className="px-5 py-3 text-right font-semibold text-slate-700">{record.checkOut}</td>
+                          <td className="px-5 py-3 text-right">
+                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${modalStatusPillClass[record.status]}`}>
+                              {record.status}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <p className="px-5 py-8 text-sm text-slate-500">
+                    No attendance rows found for this employee in the current data set.
+                  </p>
+                )}
+              </div>
             </div>
-          </div>
-        </div>
-      ) : null}
+          </div>,
+          document.body,
+        )
+        : null}
     </section>
   );
 };

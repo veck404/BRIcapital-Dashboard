@@ -23,13 +23,16 @@ interface AttendanceChartProps {
   heatmapData?: AttendanceHeatmapData | null;
 }
 
-interface CheckInDistributionPoint {
+interface TimeDistributionPoint {
   label: string;
   minutes: number;
-  count: number;
+  checkInCount: number;
+  checkOutCount: number;
 }
 
 const pad2 = (value: number) => value.toString().padStart(2, "0");
+const CHECK_IN_CUTOFF_MINUTES = 12 * 60;
+const CHECK_OUT_START_MINUTES = 12 * 60;
 
 const parseTimeToMinutes = (value: string) => {
   const parsed = value.trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -114,33 +117,45 @@ const buildDailyTrendFallback = (data: AttendanceAnalytics) => {
   }));
 };
 
-const buildCheckInDistribution = (records: AttendanceAnalytics["records"]) => {
+const buildTimeDistribution = (records: AttendanceAnalytics["records"]) => {
   const bucketSizeMinutes = 30;
-  const buckets = new Map<number, number>();
+  const checkInBuckets = new Map<number, number>();
+  const checkOutBuckets = new Map<number, number>();
 
   records.forEach((record) => {
-    const minutes = parseTimeToMinutes(record.checkIn);
-    if (minutes === null) {
-      return;
+    const checkInMinutes = parseTimeToMinutes(record.checkIn);
+    if (checkInMinutes !== null && checkInMinutes <= CHECK_IN_CUTOFF_MINUTES) {
+      const bucket =
+        Math.floor(checkInMinutes / bucketSizeMinutes) * bucketSizeMinutes;
+      checkInBuckets.set(bucket, (checkInBuckets.get(bucket) ?? 0) + 1);
     }
-    const bucket = Math.floor(minutes / bucketSizeMinutes) * bucketSizeMinutes;
-    buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
+
+    const checkOutMinutes = parseTimeToMinutes(record.checkOut);
+    if (checkOutMinutes !== null && checkOutMinutes >= CHECK_OUT_START_MINUTES) {
+      const bucket =
+        Math.floor(checkOutMinutes / bucketSizeMinutes) * bucketSizeMinutes;
+      checkOutBuckets.set(bucket, (checkOutBuckets.get(bucket) ?? 0) + 1);
+    }
   });
 
-  if (buckets.size === 0) {
-    return [] as CheckInDistributionPoint[];
+  if (checkInBuckets.size === 0 && checkOutBuckets.size === 0) {
+    return [] as TimeDistributionPoint[];
   }
 
-  const bucketKeys = Array.from(buckets.keys()).sort((first, second) => first - second);
-  const first = Math.min(bucketKeys[0], 8 * 60);
-  const last = Math.max(bucketKeys[bucketKeys.length - 1], 8 * 60);
+  const allBucketKeys = [
+    ...checkInBuckets.keys(),
+    ...checkOutBuckets.keys(),
+  ].sort((first, second) => first - second);
+  const first = Math.min(allBucketKeys[0], 8 * 60);
+  const last = Math.max(allBucketKeys[allBucketKeys.length - 1], 8 * 60);
 
-  const points: CheckInDistributionPoint[] = [];
+  const points: TimeDistributionPoint[] = [];
   for (let current = first; current <= last; current += bucketSizeMinutes) {
     points.push({
       label: minutesToLabel(current),
       minutes: current,
-      count: buckets.get(current) ?? 0,
+      checkInCount: checkInBuckets.get(current) ?? 0,
+      checkOutCount: checkOutBuckets.get(current) ?? 0,
     });
   }
 
@@ -182,7 +197,7 @@ const AttendanceChart = ({
     ? buildDailyTrendFromHeatmap(heatmapData)
     : buildDailyTrendFallback(data);
 
-  const checkInDistribution = buildCheckInDistribution(data.records);
+  const timeDistribution = buildTimeDistribution(data.records);
   const breakdownChartHeight = Math.max(280, employeeBreakdown.length * 34);
   const leaderboardHeight = Math.max(280, lateLeaderboard.length * 34);
 
@@ -327,14 +342,21 @@ const AttendanceChart = ({
       </section>
 
       <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">5) Check-In Time Distribution</h3>
+        <h3 className="section-title">5) Check-In / Check-Out Time Distribution</h3>
+        <p className="mt-1 text-xs text-slate-500">
+          Clock-ins after 12:00 are excluded. Check-outs are shown from 12:00 onward.
+        </p>
         <div className="mt-4 h-80">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={checkInDistribution}>
+            <BarChart data={timeDistribution}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="label" tick={{ fill: "#475569", fontSize: 12 }} />
               <YAxis allowDecimals={false} tick={{ fill: "#475569", fontSize: 12 }} />
-              <Tooltip formatter={(value: number) => `${value} check-in(s)`} />
+              <Tooltip
+                formatter={(value: number, name: string) =>
+                  `${value} ${name === "Check-Out Count" ? "check-out(s)" : "check-in(s)"}`
+                }
+              />
               <Legend />
               <ReferenceLine
                 x="08:00"
@@ -342,10 +364,22 @@ const AttendanceChart = ({
                 strokeDasharray="4 4"
                 label={{ value: "Late Cutoff 08:00", position: "insideTopRight", fill: "#b91c1c", fontSize: 11 }}
               />
+              <ReferenceLine
+                x="12:00"
+                stroke="#94a3b8"
+                strokeDasharray="3 3"
+                label={{ value: "Noon Split", position: "insideTopLeft", fill: "#64748b", fontSize: 11 }}
+              />
               <Bar
-                dataKey="count"
+                dataKey="checkInCount"
                 name="Check-In Count"
                 fill="#0ea5e9"
+                radius={[8, 8, 0, 0]}
+              />
+              <Bar
+                dataKey="checkOutCount"
+                name="Check-Out Count"
+                fill="#7c3aed"
                 radius={[8, 8, 0, 0]}
               />
             </BarChart>
