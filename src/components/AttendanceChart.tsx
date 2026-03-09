@@ -17,10 +17,22 @@ import type {
   EmployeeAttendanceSummary,
 } from "../services/attendanceImport";
 
+export type AttendanceChartMode = "trend" | "distribution";
+
+export interface LeaderboardPoint {
+  employeeName: string;
+  value: number;
+  delta: number;
+}
+
 interface AttendanceChartProps {
+  mode: AttendanceChartMode;
   data: AttendanceAnalytics;
   employeeSummary: EmployeeAttendanceSummary[];
   heatmapData?: AttendanceHeatmapData | null;
+  lateLeaderboard: LeaderboardPoint[];
+  punctualLeaderboard: LeaderboardPoint[];
+  hasPreviousWindow: boolean;
 }
 
 interface TimeDistributionPoint {
@@ -30,9 +42,10 @@ interface TimeDistributionPoint {
   checkOutCount: number;
 }
 
-const pad2 = (value: number) => value.toString().padStart(2, "0");
 const CHECK_IN_CUTOFF_MINUTES = 12 * 60;
 const CHECK_OUT_START_MINUTES = 12 * 60;
+
+const pad2 = (value: number) => value.toString().padStart(2, "0");
 
 const parseTimeToMinutes = (value: string) => {
   const parsed = value.trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -146,6 +159,7 @@ const buildTimeDistribution = (records: AttendanceAnalytics["records"]) => {
     ...checkInBuckets.keys(),
     ...checkOutBuckets.keys(),
   ].sort((first, second) => first - second);
+
   const first = Math.min(allBucketKeys[0], 8 * 60);
   const last = Math.max(allBucketKeys[allBucketKeys.length - 1], 8 * 60);
 
@@ -162,10 +176,126 @@ const buildTimeDistribution = (records: AttendanceAnalytics["records"]) => {
   return points;
 };
 
+const deltaLabel = (value: number) => {
+  if (value > 0) {
+    return `+${value}`;
+  }
+  return `${value}`;
+};
+
+const deltaTone = (value: number) => {
+  if (value > 0) {
+    return "bg-amber-100 text-amber-700";
+  }
+  if (value < 0) {
+    return "bg-emerald-100 text-emerald-700";
+  }
+  return "bg-slate-100 text-slate-600";
+};
+
+interface LeaderboardPanelProps {
+  title: string;
+  data: LeaderboardPoint[];
+  barColor: string;
+  valueLabel: string;
+  hasPreviousWindow: boolean;
+  emptyText: string;
+}
+
+const LeaderboardPanel = ({
+  title,
+  data,
+  barColor,
+  valueLabel,
+  hasPreviousWindow,
+  emptyText,
+}: LeaderboardPanelProps) => {
+  const chartHeight = Math.max(230, data.length * 34);
+
+  return (
+    <section className="rounded-2xl border border-slate-200/80 bg-white p-4">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-slate-800">{title}</h4>
+        {hasPreviousWindow ? (
+          <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600">
+            Delta vs previous period
+          </span>
+        ) : (
+          <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500">
+            No baseline period
+          </span>
+        )}
+      </div>
+
+      {data.length > 0 ? (
+        <>
+          <div className="mt-3" style={{ height: chartHeight }}>
+            <ResponsiveContainer width="100%" height={chartHeight}>
+              <BarChart data={data} layout="vertical" margin={{ left: 100, right: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis
+                  type="number"
+                  allowDecimals={false}
+                  tick={{ fill: "#475569", fontSize: 12 }}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="employeeName"
+                  width={95}
+                  tick={{ fill: "#475569", fontSize: 11 }}
+                />
+                <Tooltip
+                  formatter={(value: number, name: string, item) => {
+                    const payload = item.payload as LeaderboardPoint;
+                    if (!hasPreviousWindow) {
+                      return [`${value} ${valueLabel}`, name];
+                    }
+                    return [
+                      `${value} ${valueLabel} (${deltaLabel(payload.delta)} vs prev)`,
+                      name,
+                    ];
+                  }}
+                />
+                <Bar dataKey="value" name={valueLabel} fill={barColor} radius={[0, 8, 8, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          <ol className="mt-3 space-y-1.5 text-xs text-slate-600">
+            {data.slice(0, 5).map((row, index) => (
+              <li
+                key={`${title}-${row.employeeName}`}
+                className="grid grid-cols-[28px_1fr_auto_auto] items-center gap-2 rounded-lg bg-slate-50/80 px-2 py-1.5"
+              >
+                <span className="font-semibold text-slate-500">#{index + 1}</span>
+                <span className="truncate font-medium text-slate-700">{row.employeeName}</span>
+                <span className="font-semibold text-slate-800">{row.value}</span>
+                {hasPreviousWindow ? (
+                  <span className={`rounded px-1.5 py-0.5 font-semibold ${deltaTone(row.delta)}`}>
+                    {deltaLabel(row.delta)}
+                  </span>
+                ) : (
+                  <span className="rounded px-1.5 py-0.5 font-semibold text-slate-500">-</span>
+                )}
+              </li>
+            ))}
+          </ol>
+        </>
+      ) : (
+        <p className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">{emptyText}</p>
+      )}
+    </section>
+  );
+};
+
 const AttendanceChart = ({
+  mode,
   data,
   employeeSummary,
   heatmapData,
+  lateLeaderboard,
+  punctualLeaderboard,
+  hasPreviousWindow,
 }: AttendanceChartProps) => {
   const employeeBreakdown = [...employeeSummary]
     .map((row) => ({
@@ -179,162 +309,86 @@ const AttendanceChart = ({
         second.absent - first.absent
         || second.late - first.late
         || first.employeeName.localeCompare(second.employeeName),
-    );
-
-  const lateLeaderboard = [...employeeSummary]
-    .map((row) => ({
-      employeeName: row.employeeName,
-      lateClockIns: row.lateClockIns,
-    }))
-    .sort(
-      (first, second) =>
-        second.lateClockIns - first.lateClockIns
-        || first.employeeName.localeCompare(second.employeeName),
     )
-    .slice(0, 10);
-
-  const punctualLeaderboard = [...employeeSummary]
-    .map((row) => ({
-      employeeName: row.employeeName,
-      onTimeClockIns: Math.max(row.daysPresent - row.lateClockIns, 0),
-    }))
-    .sort(
-      (first, second) =>
-        second.onTimeClockIns - first.onTimeClockIns
-        || first.employeeName.localeCompare(second.employeeName),
-    )
-    .slice(0, 10);
+    .slice(0, 12);
 
   const dailyTrend = heatmapData
     ? buildDailyTrendFromHeatmap(heatmapData)
     : buildDailyTrendFallback(data);
 
   const timeDistribution = buildTimeDistribution(data.records);
-  const breakdownChartHeight = Math.max(280, employeeBreakdown.length * 34);
-  const leaderboardHeight = Math.max(280, lateLeaderboard.length * 34);
-  const punctualLeaderboardHeight = Math.max(280, punctualLeaderboard.length * 34);
+  const breakdownChartHeight = Math.max(260, employeeBreakdown.length * 34);
+
+  if (mode === "distribution") {
+    return (
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-4 sm:p-5">
+        <h3 className="text-base font-semibold text-slate-900">Clock-In / Check-Out Distribution</h3>
+        <p className="mt-1 text-xs text-slate-500">
+          Clock-ins after 12:00 are excluded. Check-outs are grouped from 12:00 onward.
+        </p>
+
+        <div className="mt-4 h-80">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={timeDistribution} barCategoryGap="8%" barGap={2}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="label" tick={{ fill: "#475569", fontSize: 12 }} />
+              <YAxis allowDecimals={false} tick={{ fill: "#475569", fontSize: 12 }} />
+              <Tooltip
+                formatter={(value: number, name: string) =>
+                  `${value} ${name === "Check-Out Count" ? "check-out(s)" : "check-in(s)"}`
+                }
+              />
+              <Legend />
+              <ReferenceLine
+                x="08:00"
+                stroke="#dc2626"
+                strokeDasharray="4 4"
+                label={{
+                  value: "Late Cutoff 08:00",
+                  position: "insideTopRight",
+                  fill: "#b91c1c",
+                  fontSize: 11,
+                }}
+              />
+              <ReferenceLine
+                x="12:00"
+                stroke="#94a3b8"
+                strokeDasharray="3 3"
+                label={{
+                  value: "Noon Split",
+                  position: "insideTopLeft",
+                  fill: "#64748b",
+                  fontSize: 11,
+                }}
+              />
+              <Bar
+                dataKey="checkInCount"
+                name="Check-In Count"
+                fill="#0ea5e9"
+                radius={[8, 8, 0, 0]}
+                barSize={18}
+              />
+              <Bar
+                dataKey="checkOutCount"
+                name="Check-Out Count"
+                fill="#7c3aed"
+                radius={[8, 8, 0, 0]}
+                barSize={18}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-2">
-      <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">1) Per-Employee Stacked Attendance</h3>
-        <div className="mt-4" style={{ height: breakdownChartHeight }}>
-          <ResponsiveContainer width="100%" height={breakdownChartHeight}>
-            <BarChart
-              data={employeeBreakdown}
-              layout="vertical"
-              margin={{ left: 120, right: 10 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis
-                type="number"
-                allowDecimals={false}
-                tick={{ fill: "#475569", fontSize: 12 }}
-              />
-              <YAxis
-                type="category"
-                dataKey="employeeName"
-                width={110}
-                tick={{ fill: "#475569", fontSize: 11 }}
-              />
-              <Tooltip formatter={(value: number) => `${value} day(s)`} />
-              <Legend />
-              <Bar
-                dataKey="onTime"
-                name="On Time"
-                stackId="days"
-                fill="#10b981"
-                radius={[0, 0, 0, 0]}
-              />
-              <Bar
-                dataKey="late"
-                name="Late"
-                stackId="days"
-                fill="#f59e0b"
-                radius={[0, 0, 0, 0]}
-              />
-              <Bar
-                dataKey="absent"
-                name="Absent"
-                stackId="days"
-                fill="#f97316"
-                radius={[0, 8, 8, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </section>
-
-      <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">2) Late Clock-In Leaderboard</h3>
-        <div className="mt-4" style={{ height: leaderboardHeight }}>
-          <ResponsiveContainer width="100%" height={leaderboardHeight}>
-            <BarChart
-              data={lateLeaderboard}
-              layout="vertical"
-              margin={{ left: 120, right: 10 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis
-                type="number"
-                allowDecimals={false}
-                tick={{ fill: "#475569", fontSize: 12 }}
-              />
-              <YAxis
-                type="category"
-                dataKey="employeeName"
-                width={110}
-                tick={{ fill: "#475569", fontSize: 11 }}
-              />
-              <Tooltip formatter={(value: number) => `${value} late day(s)`} />
-              <Bar
-                dataKey="lateClockIns"
-                name="Late Clock-Ins"
-                fill="#f59e0b"
-                radius={[0, 8, 8, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        <div className="mt-2">
-          <h4 className="text-sm font-semibold text-slate-700">
-            Punctual Clock-In Leaderboard
-          </h4>
-          <div className="mt-3" style={{ height: punctualLeaderboardHeight }}>
-            <ResponsiveContainer width="100%" height={punctualLeaderboardHeight}>
-              <BarChart
-                data={punctualLeaderboard}
-                layout="vertical"
-                margin={{ left: 120, right: 10 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis
-                  type="number"
-                  allowDecimals={false}
-                  tick={{ fill: "#475569", fontSize: 12 }}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="employeeName"
-                  width={110}
-                  tick={{ fill: "#475569", fontSize: 11 }}
-                />
-                <Tooltip formatter={(value: number) => `${value} on-time day(s)`} />
-                <Bar
-                  dataKey="onTimeClockIns"
-                  name="On-Time Clock-Ins"
-                  fill="#10b981"
-                  radius={[0, 8, 8, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </section>
-
-      <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">3) Daily Trend (Present/Absent + Late %)</h3>
+    <div className="grid gap-4 xl:grid-cols-2">
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-4 sm:p-5 xl:col-span-2">
+        <h3 className="text-base font-semibold text-slate-900">Daily Trend</h3>
+        <p className="mt-1 text-xs text-slate-500">
+          Present and absent counts are plotted against a smoothed late-rate line.
+        </p>
         <div className="mt-4 h-80">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={dailyTrend}>
@@ -376,6 +430,7 @@ const AttendanceChart = ({
                 radius={[8, 8, 0, 0]}
               />
               <Line
+                type="monotone"
                 yAxisId="rate"
                 dataKey="lateRate"
                 name="Late Rate"
@@ -389,58 +444,55 @@ const AttendanceChart = ({
         </div>
       </section>
 
-      <section className="card-surface p-4 sm:p-5">
-        <h3 className="section-title">5) Check-In / Check-Out Time Distribution</h3>
+      <section className="rounded-2xl border border-slate-200/80 bg-white p-4 sm:p-5">
+        <h3 className="text-base font-semibold text-slate-900">Per-Employee Attendance Mix</h3>
         <p className="mt-1 text-xs text-slate-500">
-          Clock-ins after 12:00 are excluded. Check-outs are shown from 12:00 onward.
+          Top employees by attendance volume, segmented by on-time, late and absent days.
         </p>
-        <div className="mt-4 h-80">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={timeDistribution}
-              barCategoryGap="8%"
-              barGap={2}
-            >
+        <div className="mt-4" style={{ height: breakdownChartHeight }}>
+          <ResponsiveContainer width="100%" height={breakdownChartHeight}>
+            <BarChart data={employeeBreakdown} layout="vertical" margin={{ left: 115, right: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-              <XAxis dataKey="label" tick={{ fill: "#475569", fontSize: 12 }} />
-              <YAxis allowDecimals={false} tick={{ fill: "#475569", fontSize: 12 }} />
-              <Tooltip
-                formatter={(value: number, name: string) =>
-                  `${value} ${name === "Check-Out Count" ? "check-out(s)" : "check-in(s)"}`
-                }
+              <XAxis
+                type="number"
+                allowDecimals={false}
+                tick={{ fill: "#475569", fontSize: 12 }}
               />
+              <YAxis
+                type="category"
+                dataKey="employeeName"
+                width={110}
+                tick={{ fill: "#475569", fontSize: 11 }}
+              />
+              <Tooltip formatter={(value: number) => `${value} day(s)`} />
               <Legend />
-              <ReferenceLine
-                x="08:00"
-                stroke="#dc2626"
-                strokeDasharray="4 4"
-                label={{ value: "Late Cutoff 08:00", position: "insideTopRight", fill: "#b91c1c", fontSize: 11 }}
-              />
-              <ReferenceLine
-                x="12:00"
-                stroke="#94a3b8"
-                strokeDasharray="3 3"
-                label={{ value: "Noon Split", position: "insideTopLeft", fill: "#64748b", fontSize: 11 }}
-              />
-              <Bar
-                dataKey="checkInCount"
-                name="Check-In Count"
-                fill="#0ea5e9"
-                radius={[8, 8, 0, 0]}
-                barSize={18}
-              />
-              <Bar
-                dataKey="checkOutCount"
-                name="Check-Out Count"
-                fill="#7c3aed"
-                radius={[8, 8, 0, 0]}
-                barSize={18}
-              />
+              <Bar dataKey="onTime" name="On Time" stackId="days" fill="#10b981" />
+              <Bar dataKey="late" name="Late" stackId="days" fill="#f59e0b" />
+              <Bar dataKey="absent" name="Absent" stackId="days" fill="#f97316" radius={[0, 8, 8, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
-
       </section>
+
+      <div className="space-y-4">
+        <LeaderboardPanel
+          title="Late Clock-In Leaderboard"
+          data={lateLeaderboard}
+          barColor="#f59e0b"
+          valueLabel="Late Clock-Ins"
+          hasPreviousWindow={hasPreviousWindow}
+          emptyText="No late clock-ins in this period."
+        />
+
+        <LeaderboardPanel
+          title="Punctual Clock-In Leaderboard"
+          data={punctualLeaderboard}
+          barColor="#10b981"
+          valueLabel="On-Time Clock-Ins"
+          hasPreviousWindow={hasPreviousWindow}
+          emptyText="No on-time clock-ins in this period."
+        />
+      </div>
     </div>
   );
 };
