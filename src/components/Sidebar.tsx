@@ -31,7 +31,7 @@ const Sidebar = ({ isOpen, onClose }: SidebarProps) => {
         <div className="flex h-16 items-center justify-between border-b border-[#e7d5e9] px-5 dark:border-slate-700/80">
           <div>
             <p className="font-heading text-lg font-semibold text-[#591a5b]">
-              IT Operations
+              BRIcapital Ops
             </p>
             <p className="text-xs text-[#8b5a8e]">Internal Dashboard</p>
           </div>
