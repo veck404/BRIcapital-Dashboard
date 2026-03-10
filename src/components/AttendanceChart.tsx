@@ -303,8 +303,7 @@ const AttendanceChart = ({
         second.absent - first.absent ||
         second.late - first.late ||
         first.employeeName.localeCompare(second.employeeName),
-    )
-    .slice(0, 12);
+    );
 
   const dailyTrend = heatmapData
     ? buildDailyTrendFromHeatmap(heatmapData)
@@ -475,8 +474,7 @@ const AttendanceChart = ({
               Per-Employee Attendance Mix
             </h3>
             <p className="mt-1 text-xs text-slate-500">
-              Top employees by attendance volume, segmented by on-time, late
-              and absent days.
+              All employees, segmented by on-time, late, and absent days.
             </p>
           </div>
           <ChartExportButtons

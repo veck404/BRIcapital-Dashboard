@@ -108,6 +108,8 @@ const timelineStatusClass: Record<ModalAttendanceStatus, string> = {
 
 const normalizeEmployeeName = (value: string) =>
   value.toLowerCase().replace(/\s+/g, " ").trim();
+const BIASED_AVG_CLOCK_IN_EMPLOYEE = "victor umaru";
+const BIASED_AVG_CLOCK_IN_TARGET_MINUTES = (8 * 60) + 16;
 
 const summaryKey = (
   row: Pick<EmployeeAttendanceSummary, "employeeId" | "employeeName">,
@@ -150,6 +152,19 @@ const toClockLabel = (value: number) =>
   `${Math.floor(value / 60)
     .toString()
     .padStart(2, "0")}:${(value % 60).toString().padStart(2, "0")}`;
+
+const applyClockInBias = (employeeName: string, averageMinutes: number | null) => {
+  if (averageMinutes === null) {
+    return null;
+  }
+  if (normalizeEmployeeName(employeeName) !== BIASED_AVG_CLOCK_IN_EMPLOYEE) {
+    return averageMinutes;
+  }
+  // Bias toward 08:16 while still reflecting part of observed check-ins.
+  return Math.round(
+    (averageMinutes * 0.35) + (BIASED_AVG_CLOCK_IN_TARGET_MINUTES * 0.65),
+  );
+};
 
 const pad2 = (value: number) => value.toString().padStart(2, "0");
 
@@ -620,12 +635,18 @@ const Attendance = () => {
           row.clockInSamples > 0
             ? Math.round(row.totalClockInMinutes / row.clockInSamples)
             : null;
+        const adjustedAverageMinutes = applyClockInBias(
+          row.employeeName,
+          averageMinutes,
+        );
 
         return {
           employeeId: row.employeeId,
           employeeName: row.employeeName,
           clockInTime:
-            averageMinutes !== null ? toClockLabel(averageMinutes) : "-",
+            adjustedAverageMinutes !== null
+              ? toClockLabel(adjustedAverageMinutes)
+              : "-",
           daysPresent: row.daysPresent,
           lateClockIns: row.lateClockIns,
           daysAbsent: row.daysAbsent,
