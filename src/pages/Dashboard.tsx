@@ -8,7 +8,8 @@ import {
   YAxis,
 } from "recharts";
 import { Activity, Clock4, Network, UserCheck, UserX } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import ChartExportButtons from "../components/ChartExportButtons";
 import StatCard from "../components/StatCard";
 import DeviceTable from "../components/DeviceTable";
 import {
@@ -33,6 +34,8 @@ const Dashboard = () => {
   const [streamStatus, setStreamStatus] = useState<
     "disabled" | "connecting" | "live" | "offline"
   >(collectorEnabled ? "connecting" : "disabled");
+  const attendanceSnapshotRef = useRef<HTMLDivElement>(null);
+  const bandwidthPulseRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const loadData = async () => {
@@ -181,8 +184,15 @@ const Dashboard = () => {
 
       <div className="grid gap-6 xl:grid-cols-2">
         <section className="card-surface p-4 sm:p-5">
-          <h3 className="section-title">Attendance Rate Snapshot</h3>
-          <div className="mt-4 h-72">
+          <div className="flex items-start justify-between gap-3">
+            <h3 className="section-title">Attendance Rate Snapshot</h3>
+            <ChartExportButtons
+              targetRef={attendanceSnapshotRef}
+              fileName="dashboard-attendance-rate-snapshot"
+              disabled={attendance.trend.length === 0}
+            />
+          </div>
+          <div ref={attendanceSnapshotRef} className="mt-4 h-72">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={attendance.trend}>
                 <defs>
@@ -208,8 +218,15 @@ const Dashboard = () => {
         </section>
 
         <section className="card-surface p-4 sm:p-5">
-          <h3 className="section-title">Bandwidth Pulse by Time</h3>
-          <div className="mt-4 h-72">
+          <div className="flex items-start justify-between gap-3">
+            <h3 className="section-title">Bandwidth Pulse by Time</h3>
+            <ChartExportButtons
+              targetRef={bandwidthPulseRef}
+              fileName="dashboard-bandwidth-pulse-by-time"
+              disabled={network.usageOverTime.length === 0}
+            />
+          </div>
+          <div ref={bandwidthPulseRef} className="mt-4 h-72">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={network.usageOverTime}>
                 <defs>

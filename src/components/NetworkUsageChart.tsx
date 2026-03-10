@@ -13,6 +13,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { useRef } from "react";
+import ChartExportButtons from "./ChartExportButtons";
 import type { NetworkAnalytics, UsageOverTimePoint } from "../services/api";
 
 interface NetworkUsageChartProps {
@@ -37,17 +39,27 @@ const NetworkUsageChart = ({
   const topDevicesChartId = "top-devices-chart";
   const usageChartId = "bandwidth-chart";
   const trafficChartId = "traffic-chart";
+  const topDevicesChartRef = useRef<HTMLDivElement>(null);
+  const bandwidthChartRef = useRef<HTMLDivElement>(null);
+  const trafficDistributionChartRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className="grid gap-5 xl:grid-cols-3">
       <section className="card-surface p-4 sm:p-5">
         <div className="flex items-start justify-between gap-2">
           <h3 className="section-title">Top 10 Devices by Bandwidth</h3>
-          <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-700">
-            {data.topDevices.length} devices
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-700">
+              {data.topDevices.length} devices
+            </span>
+            <ChartExportButtons
+              targetRef={topDevicesChartRef}
+              fileName="network-top-devices-by-bandwidth"
+              disabled={data.topDevices.length === 0}
+            />
+          </div>
         </div>
-        <div className="mt-4 h-72">
+        <div ref={topDevicesChartRef} className="mt-4 h-72">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={data.topDevices}
@@ -100,17 +112,24 @@ const NetworkUsageChart = ({
               </p>
             ) : null}
           </div>
-          {loading ? (
-            <span
-              className="animate-pulse rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600"
-              role="status"
-              aria-live="polite"
-            >
-              Updating...
-            </span>
-          ) : null}
+          <div className="flex items-center gap-2">
+            {loading ? (
+              <span
+                className="animate-pulse rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600"
+                role="status"
+                aria-live="polite"
+              >
+                Updating...
+              </span>
+            ) : null}
+            <ChartExportButtons
+              targetRef={bandwidthChartRef}
+              fileName="network-bandwidth-over-time"
+              disabled={usagePoints.length === 0}
+            />
+          </div>
         </div>
-        <div className="mt-4 h-72">
+        <div ref={bandwidthChartRef} className="mt-4 h-72">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
               data={usagePoints}
@@ -172,11 +191,18 @@ const NetworkUsageChart = ({
       <section className="card-surface p-4 sm:p-5">
         <div className="flex items-start justify-between gap-2">
           <h3 className="section-title">Traffic Distribution</h3>
-          <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-semibold text-indigo-700">
-            {data.trafficDistribution.length} categories
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-semibold text-indigo-700">
+              {data.trafficDistribution.length} categories
+            </span>
+            <ChartExportButtons
+              targetRef={trafficDistributionChartRef}
+              fileName="network-traffic-distribution"
+              disabled={data.trafficDistribution.length === 0}
+            />
+          </div>
         </div>
-        <div className="mt-4 h-72">
+        <div ref={trafficDistributionChartRef} className="mt-4 h-72">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart aria-label={trafficChartId}>
               <Pie

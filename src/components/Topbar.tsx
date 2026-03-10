@@ -1,4 +1,4 @@
-import { Bell, Menu } from "lucide-react";
+import { Menu } from "lucide-react";
 import { useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -47,14 +47,6 @@ const Topbar = ({ onToggleSidebar }: TopbarProps) => {
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            className="relative rounded-xl border border-[#e4c3e7] bg-white p-2 text-[#7b277d] transition hover:border-[#d39ad8] hover:bg-[#f9f2fa] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-800"
-            aria-label="Notifications"
-          >
-            <Bell size={18} />
-            <span className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-[#f5bf1b]" />
-          </button>
           <div className="hidden rounded-xl border border-[#e4c3e7] bg-[#fcf8fd] px-3 py-2 text-right sm:block dark:border-slate-700 dark:bg-slate-900">
             <p className="text-sm font-semibold text-[#591a5b]">Ops Control</p>
             <p className="text-xs text-[#8b5a8e]">Management View</p>
