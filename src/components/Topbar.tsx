@@ -1,21 +1,18 @@
 import { ChevronDown, Menu } from "lucide-react";
 import { useMemo, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { pageTitles, type AppRoutePath } from "../config/navigation";
 
 interface TopbarProps {
   onToggleSidebar: () => void;
 }
 
-const pageTitles: Record<string, string> = {
-  "/": "Overview",
-  "/attendance": "Attendance Analytics",
-  "/network": "Network Usage",
-};
-
 const Topbar = ({ onToggleSidebar }: TopbarProps) => {
   const location = useLocation();
   const navigate = useNavigate();
   const opsControlRef = useRef<HTMLDetailsElement>(null);
+  const pageTitle =
+    pageTitles[location.pathname as AppRoutePath] ?? "IT Operations";
 
   const today = useMemo(
     () =>
@@ -47,21 +44,20 @@ const Topbar = ({ onToggleSidebar }: TopbarProps) => {
           </button>
           <div>
             <p className="font-heading text-lg font-semibold tracking-tight text-[#591a5b]">
-              {pageTitles[location.pathname] ?? "IT Operations"}
+              {pageTitle}
             </p>
             <p className="text-xs text-[#8b5a8e]">{today}</p>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <details
-            ref={opsControlRef}
-            className="relative hidden sm:block"
-          >
+          <details ref={opsControlRef} className="relative hidden sm:block">
             <summary className="list-none cursor-pointer rounded-xl border border-[#e4c3e7] bg-[#fcf8fd] px-3 py-2 text-right transition hover:border-[#d39ad8] hover:bg-[#f9f2fa] [&::-webkit-details-marker]:hidden dark:border-slate-700 dark:bg-slate-900 dark:hover:border-slate-600 dark:hover:bg-slate-800">
               <div className="flex items-center gap-2">
                 <div>
-                  <p className="text-sm font-semibold text-[#591a5b]">Ops Control</p>
+                  <p className="text-sm font-semibold text-[#591a5b]">
+                    Ops Control
+                  </p>
                   <p className="text-xs text-[#8b5a8e]">Management View</p>
                 </div>
                 <ChevronDown size={16} className="text-[#8b5a8e]" />

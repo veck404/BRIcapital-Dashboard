@@ -1,16 +1,17 @@
 import { ClipboardCheck, LayoutDashboard, Wifi, X } from "lucide-react";
 import { NavLink } from "react-router-dom";
+import { appNavigation, type AppRoutePath } from "../config/navigation";
 
 interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-const navigation = [
-  { label: "Dashboard", path: "/", icon: LayoutDashboard },
-  { label: "Attendance Analytics", path: "/attendance", icon: ClipboardCheck },
-  { label: "Network Usage", path: "/network", icon: Wifi },
-];
+const iconByRoute: Record<AppRoutePath, typeof LayoutDashboard> = {
+  "/": LayoutDashboard,
+  "/attendance": ClipboardCheck,
+  "/network": Wifi,
+};
 
 const Sidebar = ({ isOpen, onClose }: SidebarProps) => {
   return (
@@ -46,8 +47,8 @@ const Sidebar = ({ isOpen, onClose }: SidebarProps) => {
         </div>
 
         <nav className="space-y-2 px-4 py-5">
-          {navigation.map((item) => {
-            const Icon = item.icon;
+          {appNavigation.map((item) => {
+            const Icon = iconByRoute[item.path];
             return (
               <NavLink
                 key={item.path}

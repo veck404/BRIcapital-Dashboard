@@ -1,21 +1,48 @@
 import {
   CalendarDays,
-  ChevronLeft,
-  ChevronRight,
   Download,
-  Filter,
   RotateCcw,
-  Search,
   Upload,
-  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
-import { createPortal } from "react-dom";
 import AttendanceChart, {
   type AttendanceChartMode,
   type LeaderboardPoint,
 } from "../components/AttendanceChart";
+import EmployeeRecordModal from "./attendance/components/EmployeeRecordModal";
+import EmployeeSummarySection from "./attendance/components/EmployeeSummarySection";
+import {
+  addDays,
+  analysisTabs,
+  applyClockInBias,
+  buildDailyComparisonFromRecords,
+  buildPunctualityFromRecords,
+  buildTrendFromDaily,
+  csvEscape,
+  formatDateKey,
+  formatRemainingDuration,
+  heatmapCellClass,
+  heatmapStatusLabel,
+  isDateWithinWindow,
+  normalizeEmployeeName,
+  parseClockToMinutes,
+  parseDateKey,
+  prettyDate,
+  rangePresets,
+  recordKey,
+  summaryKey,
+  toClockLabel,
+  toLongDateLabel,
+  type AnalysisTab,
+  type EmployeeModalRecord,
+  type ModalAttendanceStatus,
+  type RangePreset,
+  type RangeWindow,
+  type SortColumn,
+  type SortOrder,
+  type SummaryQuickFilter,
+} from "./attendance/helpers";
 import {
   fetchAttendanceAnalytics,
   type AttendanceAnalytics,
@@ -31,283 +58,6 @@ import {
   type AttendanceHeatmapStatus,
   type EmployeeAttendanceSummary,
 } from "../services/attendanceImport";
-
-type AnalysisTab = "trend" | "distribution" | "heatmap";
-type RangePreset = "7d" | "14d" | "30d" | "all";
-type SummaryQuickFilter = "all" | "late" | "absent";
-type ModalAttendanceStatus = "On Time" | "Late" | "Absent" | "Weekend";
-type SortColumn = "name" | "clockIn" | "present" | "onTime" | "late" | "absent";
-type SortOrder = "asc" | "desc";
-
-interface EmployeeModalRecord {
-  dateKey: string;
-  dateLabel: string;
-  checkIn: string;
-  checkOut: string;
-  status: ModalAttendanceStatus;
-}
-
-interface RangeWindow {
-  startKey: string;
-  endKey: string;
-  days: number;
-  label: string;
-}
-
-const analysisTabs: Array<{ value: AnalysisTab; label: string }> = [
-  { value: "trend", label: "Trend" },
-  { value: "distribution", label: "Distribution" },
-  { value: "heatmap", label: "Heatmap" },
-];
-
-const rangePresets: Array<{
-  value: RangePreset;
-  label: string;
-  days: number | null;
-}> = [
-  { value: "7d", label: "7 Days", days: 7 },
-  { value: "14d", label: "14 Days", days: 14 },
-  { value: "30d", label: "30 Days", days: 30 },
-  { value: "all", label: "All", days: null },
-];
-
-const summaryQuickFilters: Array<{ value: SummaryQuickFilter; label: string }> =
-  [
-    { value: "all", label: "All Employees" },
-    { value: "late", label: "Late > 0" },
-    { value: "absent", label: "Absent > 0" },
-  ];
-
-const heatmapCellClass: Record<AttendanceHeatmapStatus, string> = {
-  present: "bg-emerald-500/90",
-  late: "bg-amber-400/95",
-  absent: "bg-rose-500/90",
-  weekend: "bg-slate-200",
-};
-
-const heatmapStatusLabel: Record<AttendanceHeatmapStatus, string> = {
-  present: "On Time",
-  late: "Late",
-  absent: "Absent",
-  weekend: "Weekend",
-};
-
-const modalStatusPillClass: Record<ModalAttendanceStatus, string> = {
-  "On Time": "bg-emerald-100 text-emerald-700",
-  Late: "bg-amber-100 text-amber-700",
-  Absent: "bg-rose-100 text-rose-700",
-  Weekend: "bg-slate-100 text-slate-600",
-};
-
-const timelineStatusClass: Record<ModalAttendanceStatus, string> = {
-  "On Time": "bg-emerald-500",
-  Late: "bg-amber-400",
-  Absent: "bg-rose-500",
-  Weekend: "bg-slate-300",
-};
-
-const normalizeEmployeeName = (value: string) =>
-  value.toLowerCase().replace(/\s+/g, " ").trim();
-const BIASED_AVG_CLOCK_IN_EMPLOYEE = "victor umaru";
-const BIASED_AVG_CLOCK_IN_TARGET_MINUTES = (8 * 60) + 16;
-
-const summaryKey = (
-  row: Pick<EmployeeAttendanceSummary, "employeeId" | "employeeName">,
-) =>
-  row.employeeId
-    ? `${row.employeeId}::${normalizeEmployeeName(row.employeeName)}`
-    : `name::${normalizeEmployeeName(row.employeeName)}`;
-
-const recordKey = (
-  record: Pick<
-    AttendanceAnalytics["records"][number],
-    "employeeId" | "employeeName"
-  >,
-) =>
-  record.employeeId
-    ? `${record.employeeId}::${normalizeEmployeeName(record.employeeName)}`
-    : `name::${normalizeEmployeeName(record.employeeName)}`;
-
-const parseClockToMinutes = (value: string) => {
-  const parsed = value.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!parsed) {
-    return null;
-  }
-  const hour = Number(parsed[1]);
-  const minute = Number(parsed[2]);
-  if (
-    !Number.isInteger(hour) ||
-    !Number.isInteger(minute) ||
-    hour < 0 ||
-    hour > 23 ||
-    minute < 0 ||
-    minute > 59
-  ) {
-    return null;
-  }
-  return hour * 60 + minute;
-};
-
-const toClockLabel = (value: number) =>
-  `${Math.floor(value / 60)
-    .toString()
-    .padStart(2, "0")}:${(value % 60).toString().padStart(2, "0")}`;
-
-const applyClockInBias = (employeeName: string, averageMinutes: number | null) => {
-  if (averageMinutes === null) {
-    return null;
-  }
-  if (normalizeEmployeeName(employeeName) !== BIASED_AVG_CLOCK_IN_EMPLOYEE) {
-    return averageMinutes;
-  }
-  if (averageMinutes < BIASED_AVG_CLOCK_IN_TARGET_MINUTES) {
-    return averageMinutes;
-  }
-  // Bias toward 08:16 while still reflecting part of observed check-ins.
-  return Math.round(
-    (averageMinutes * 0.35) + (BIASED_AVG_CLOCK_IN_TARGET_MINUTES * 0.65),
-  );
-};
-
-const pad2 = (value: number) => value.toString().padStart(2, "0");
-
-const formatDateKey = (value: Date) =>
-  `${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`;
-
-const parseDateKey = (value: string) => {
-  const [yearRaw, monthRaw, dayRaw] = value.split("-");
-  const year = Number(yearRaw);
-  const month = Number(monthRaw);
-  const day = Number(dayRaw);
-
-  if (
-    !Number.isInteger(year) ||
-    !Number.isInteger(month) ||
-    !Number.isInteger(day)
-  ) {
-    return null;
-  }
-
-  const parsed = new Date(year, month - 1, day);
-  if (
-    parsed.getFullYear() !== year ||
-    parsed.getMonth() !== month - 1 ||
-    parsed.getDate() !== day
-  ) {
-    return null;
-  }
-
-  parsed.setHours(0, 0, 0, 0);
-  return parsed;
-};
-
-const addDays = (value: Date, amount: number) => {
-  const next = new Date(value);
-  next.setDate(next.getDate() + amount);
-  return next;
-};
-
-const prettyDate = (value: string) => {
-  const parsed = parseDateKey(value);
-  if (!parsed) {
-    return value;
-  }
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(parsed);
-};
-
-const toLongDateLabel = (dateKey: string) => {
-  const parsed = parseDateKey(dateKey);
-  if (!parsed) {
-    return dateKey;
-  }
-  return new Intl.DateTimeFormat("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(parsed);
-};
-
-const formatRemainingDuration = (value: number) => {
-  const totalMinutes = Math.max(Math.floor(value / 60000), 0);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
-  return `${minutes}m`;
-};
-
-const csvEscape = (value: string | number) => {
-  const text = String(value);
-  if (text.includes(",") || text.includes('"') || text.includes("\n")) {
-    return `"${text.replace(/\"/g, '""')}"`;
-  }
-  return text;
-};
-
-const isDateWithinWindow = (
-  dateKey: string,
-  rangeWindow: RangeWindow | null,
-) => {
-  if (!rangeWindow) {
-    return true;
-  }
-  return dateKey >= rangeWindow.startKey && dateKey <= rangeWindow.endKey;
-};
-
-const buildDailyComparisonFromRecords = (
-  records: AttendanceAnalytics["records"],
-) => {
-  const byDate = new Map<string, number>();
-  records.forEach((record) => {
-    if (!record.date) {
-      return;
-    }
-    byDate.set(record.date, (byDate.get(record.date) ?? 0) + 1);
-  });
-
-  return Array.from(byDate.entries())
-    .sort(([first], [second]) => first.localeCompare(second))
-    .map(([dateKey, present]) => ({
-      day: new Intl.DateTimeFormat("en-US", {
-        month: "short",
-        day: "numeric",
-      }).format(parseDateKey(dateKey) ?? new Date(`${dateKey}T00:00:00`)),
-      present,
-      absent: 0,
-    }));
-};
-
-const buildTrendFromDaily = (
-  dailyComparison: AttendanceAnalytics["dailyComparison"],
-) =>
-  dailyComparison.map((point) => {
-    const denominator = point.present + point.absent;
-    const presentRate =
-      denominator > 0
-        ? Number(((point.present / denominator) * 100).toFixed(1))
-        : 0;
-    return {
-      date: point.day,
-      presentRate,
-    };
-  });
-
-const buildPunctualityFromRecords = (
-  records: AttendanceAnalytics["records"],
-) => {
-  const late = records.filter((record) => record.status === "Late").length;
-  const onTime = records.length - late;
-  return [
-    { name: "On Time" as const, value: onTime },
-    { name: "Late" as const, value: late },
-  ];
-};
 
 const Attendance = () => {
   const [attendanceData, setAttendanceData] =
@@ -325,6 +75,8 @@ const Attendance = () => {
   const [cacheExpiresAt, setCacheExpiresAt] = useState<number | null>(null);
   const [analysisTab, setAnalysisTab] = useState<AnalysisTab>("trend");
   const [rangePreset, setRangePreset] = useState<RangePreset>("30d");
+  const [customStartKey, setCustomStartKey] = useState("");
+  const [customEndKey, setCustomEndKey] = useState("");
   const [summarySearch, setSummarySearch] = useState("");
   const [summaryFilter, setSummaryFilter] = useState<SummaryQuickFilter>("all");
   const [selectedEmployeeKey, setSelectedEmployeeKey] = useState<string | null>(
@@ -429,6 +181,60 @@ const Attendance = () => {
     return Array.from(keys).sort();
   }, [attendanceData, heatmapData]);
 
+  const minAvailableDateKey = allDateKeys[0] ?? "";
+  const maxAvailableDateKey = allDateKeys[allDateKeys.length - 1] ?? "";
+
+  useEffect(() => {
+    if (rangePreset !== "custom" || allDateKeys.length === 0) {
+      return;
+    }
+
+    if (!customStartKey) {
+      setCustomStartKey(minAvailableDateKey);
+    } else if (
+      customStartKey < minAvailableDateKey ||
+      customStartKey > maxAvailableDateKey
+    ) {
+      setCustomStartKey(
+        customStartKey < minAvailableDateKey
+          ? minAvailableDateKey
+          : maxAvailableDateKey,
+      );
+    }
+
+    if (!customEndKey) {
+      setCustomEndKey(maxAvailableDateKey);
+    } else if (
+      customEndKey < minAvailableDateKey ||
+      customEndKey > maxAvailableDateKey
+    ) {
+      setCustomEndKey(
+        customEndKey < minAvailableDateKey
+          ? minAvailableDateKey
+          : maxAvailableDateKey,
+      );
+    }
+  }, [
+    allDateKeys.length,
+    customEndKey,
+    customStartKey,
+    maxAvailableDateKey,
+    minAvailableDateKey,
+    rangePreset,
+  ]);
+
+  const handleRangePresetChange = (preset: RangePreset) => {
+    if (preset === "custom") {
+      const fallbackStart =
+        rangeWindow?.startKey || minAvailableDateKey || customStartKey;
+      const fallbackEnd =
+        rangeWindow?.endKey || maxAvailableDateKey || customEndKey;
+      setCustomStartKey((current) => current || fallbackStart);
+      setCustomEndKey((current) => current || fallbackEnd);
+    }
+    setRangePreset(preset);
+  };
+
   const rangeWindow = useMemo<RangeWindow | null>(() => {
     if (allDateKeys.length === 0) {
       return null;
@@ -436,20 +242,55 @@ const Attendance = () => {
 
     const minKey = allDateKeys[0];
     const maxKey = allDateKeys[allDateKeys.length - 1];
+    const minDate = parseDateKey(minKey);
+    const maxDate = parseDateKey(maxKey);
 
-    if (rangePreset === "all") {
+    if (rangePreset === "custom") {
+      const rawStartDate = parseDateKey(customStartKey || minKey);
+      const rawEndDate = parseDateKey(customEndKey || maxKey);
+
+      if (!minDate || !maxDate || !rawStartDate || !rawEndDate) {
+        return {
+          startKey: minKey,
+          endKey: maxKey,
+          days: allDateKeys.length,
+          label: `${prettyDate(minKey)} - ${prettyDate(maxKey)}`,
+        };
+      }
+
+      const clampedStart =
+        rawStartDate < minDate
+          ? minDate
+          : rawStartDate > maxDate
+            ? maxDate
+            : rawStartDate;
+      const clampedEnd =
+        rawEndDate > maxDate
+          ? maxDate
+          : rawEndDate < minDate
+            ? minDate
+            : rawEndDate;
+      const [startDate, endDate] =
+        clampedStart <= clampedEnd
+          ? [clampedStart, clampedEnd]
+          : [clampedEnd, clampedStart];
+      const startKey = formatDateKey(startDate);
+      const endKey = formatDateKey(endDate);
+      const daySpan =
+        Math.floor(
+          (endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000),
+        ) + 1;
+
       return {
-        startKey: minKey,
-        endKey: maxKey,
-        days: allDateKeys.length,
-        label: `${prettyDate(minKey)} - ${prettyDate(maxKey)}`,
+        startKey,
+        endKey,
+        days: Math.max(daySpan, 1),
+        label: `${prettyDate(startKey)} - ${prettyDate(endKey)}`,
       };
     }
 
     const preset = rangePresets.find((option) => option.value === rangePreset);
     const days = preset?.days ?? 30;
-    const maxDate = parseDateKey(maxKey);
-    const minDate = parseDateKey(minKey);
     if (!maxDate || !minDate) {
       return {
         startKey: minKey,
@@ -469,7 +310,7 @@ const Attendance = () => {
       days,
       label: `${prettyDate(startKey)} - ${prettyDate(maxKey)}`,
     };
-  }, [allDateKeys, rangePreset]);
+  }, [allDateKeys, customEndKey, customStartKey, rangePreset]);
 
   const filteredRecords = useMemo(() => {
     if (!attendanceData) {
@@ -661,7 +502,7 @@ const Attendance = () => {
   }, [attendanceData, filteredHeatmap, filteredRecords]);
 
   const previousRangeRecords = useMemo(() => {
-    if (!attendanceData || !rangeWindow || rangePreset === "all") {
+    if (!attendanceData || !rangeWindow) {
       return [] as AttendanceAnalytics["records"];
     }
 
@@ -681,7 +522,7 @@ const Attendance = () => {
       }
       return record.date >= previousStartKey && record.date <= previousEndKey;
     });
-  }, [attendanceData, rangePreset, rangeWindow]);
+  }, [attendanceData, rangeWindow]);
 
   const hasPreviousWindow = previousRangeRecords.length > 0;
 
@@ -1181,7 +1022,7 @@ const Attendance = () => {
                     key={preset.value}
                     type="button"
                     onClick={() => {
-                      setRangePreset(preset.value);
+                      handleRangePresetChange(preset.value);
                     }}
                     className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${
                       rangePreset === preset.value
@@ -1193,6 +1034,42 @@ const Attendance = () => {
                   </button>
                 ))}
               </div>
+              {rangePreset === "custom" ? (
+                <div className="mt-2 flex flex-wrap items-end gap-2.5">
+                  <label className="space-y-1">
+                    <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Start
+                    </span>
+                    <input
+                      type="date"
+                      value={customStartKey}
+                      min={minAvailableDateKey}
+                      max={customEndKey || maxAvailableDateKey}
+                      onChange={(event) => {
+                        setCustomStartKey(event.target.value);
+                      }}
+                      disabled={!minAvailableDateKey}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      End
+                    </span>
+                    <input
+                      type="date"
+                      value={customEndKey}
+                      min={customStartKey || minAvailableDateKey}
+                      max={maxAvailableDateKey}
+                      onChange={(event) => {
+                        setCustomEndKey(event.target.value);
+                      }}
+                      disabled={!maxAvailableDateKey}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
+                    />
+                  </label>
+                </div>
+              ) : null}
             </div>
 
             <div className="space-y-2">
@@ -1437,421 +1314,35 @@ const Attendance = () => {
         </div>
       </section>
 
-      <section className="card-surface overflow-hidden animate-in fade-in slide-in-from-bottom-2 [animation-delay:600ms] transition-all duration-300">
-        <div className="border-b border-slate-200/80 px-4 py-4 sm:px-5">
-          <h3 className="section-title">Employee Attendance Summary</h3>
-          <p className="mt-1 text-xs text-slate-500">
-            Search and filter employees, then click a row to drill into
-            individual records.
-          </p>
-        </div>
-
-        <div className="flex flex-col gap-3 border-b border-slate-200/80 px-4 py-3 sm:px-5 md:flex-row md:items-center md:justify-between">
-          <label className="relative w-full max-w-sm">
-            <Search
-              size={16}
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-            />
-            <input
-              type="text"
-              value={summarySearch}
-              onChange={(event) => {
-                setSummarySearch(event.target.value);
-              }}
-              placeholder="Search employee"
-              className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-700 outline-none transition focus:border-sky-300 focus:ring-2 focus:ring-sky-100"
-            />
-          </label>
-
-          <div className="inline-flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <Filter size={14} />
-              Quick Filter
-            </span>
-            {summaryQuickFilters.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => {
-                  setSummaryFilter(option.value);
-                }}
-                className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 ${
-                  summaryFilter === option.value
-                    ? "border-sky-300 bg-sky-50 text-sky-700"
-                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {filteredSummaryRows.length > 0 ? (
-          <div className="overflow-x-auto -mx-4 sm:mx-0">
-            <table className="min-w-full divide-y divide-slate-200/80 text-xs sm:text-sm">
-              <thead className="sticky top-0 bg-slate-50/80 z-10">
-                <tr>
-                  <th className="px-3 sm:px-5 py-2 sm:py-3 text-left">
-                    <button
-                      type="button"
-                      onClick={() => handleColumnSort("name")}
-                      className="inline-flex items-center gap-1 sm:gap-1.5 font-semibold text-slate-600 hover:text-slate-800 transition text-left"
-                    >
-                      Employee
-                      {sortColumn === "name" && (
-                        <span className="text-xs">
-                          {sortOrder === "asc" ? "↑" : "↓"}
-                        </span>
-                      )}
-                    </button>
-                  </th>
-                  <th className="px-2 sm:px-5 py-2 sm:py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleColumnSort("clockIn")}
-                      className="inline-flex items-center justify-end gap-1 sm:gap-1.5 font-semibold text-slate-600 hover:text-slate-800 transition w-full"
-                    >
-                      <span className="hidden sm:inline">Avg Clock-In</span>
-                      <span className="sm:hidden">Clock-In</span>
-                      {sortColumn === "clockIn" && (
-                        <span className="text-xs">
-                          {sortOrder === "asc" ? "↑" : "↓"}
-                        </span>
-                      )}
-                    </button>
-                  </th>
-                  <th className="px-2 sm:px-5 py-2 sm:py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleColumnSort("present")}
-                      className="inline-flex items-center justify-end gap-1 sm:gap-1.5 font-semibold text-slate-600 hover:text-slate-800 transition w-full"
-                    >
-                      Present
-                      {sortColumn === "present" && (
-                        <span className="text-xs">
-                          {sortOrder === "asc" ? "↑" : "↓"}
-                        </span>
-                      )}
-                    </button>
-                  </th>
-                  <th className="px-2 sm:px-5 py-2 sm:py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleColumnSort("onTime")}
-                      className="inline-flex items-center justify-end gap-1 sm:gap-1.5 font-semibold text-slate-600 hover:text-slate-800 transition w-full"
-                    >
-                      <span className="hidden sm:inline">On-Time</span>
-                      <span className="sm:hidden">On-Time</span>
-                      {sortColumn === "onTime" && (
-                        <span className="text-xs">
-                          {sortOrder === "asc" ? "↑" : "↓"}
-                        </span>
-                      )}
-                    </button>
-                  </th>
-                  <th className="px-2 sm:px-5 py-2 sm:py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleColumnSort("late")}
-                      className="inline-flex items-center justify-end gap-1 sm:gap-1.5 font-semibold text-slate-600 hover:text-slate-800 transition w-full"
-                    >
-                      Late
-                      {sortColumn === "late" && (
-                        <span className="text-xs">
-                          {sortOrder === "asc" ? "↑" : "↓"}
-                        </span>
-                      )}
-                    </button>
-                  </th>
-                  <th className="px-2 sm:px-5 py-2 sm:py-3 text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleColumnSort("absent")}
-                      className="inline-flex items-center justify-end gap-1 sm:gap-1.5 font-semibold text-slate-600 hover:text-slate-800 transition w-full"
-                    >
-                      Absent
-                      {sortColumn === "absent" && (
-                        <span className="text-xs">
-                          {sortOrder === "asc" ? "↑" : "↓"}
-                        </span>
-                      )}
-                    </button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200/70">
-                {filteredSummaryRows.map((row) => {
-                  const onTimeDays = Math.max(
-                    row.daysPresent - row.lateClockIns,
-                    0,
-                  );
-                  return (
-                    <tr
-                      key={`${row.employeeId}-${row.employeeName}`}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => {
-                        openEmployeeModal(row);
-                      }}
-                      onKeyDown={(event) => {
-                        handleSummaryRowKeyDown(event, row);
-                      }}
-                      className="cursor-pointer transition-all duration-200 hover:bg-sky-50/50 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/60 active:bg-sky-100/30"
-                      aria-label={`Open attendance record for ${row.employeeName}`}
-                    >
-                      <td className="px-3 sm:px-5 py-2 sm:py-3 text-slate-700">
-                        <span className="font-semibold text-sky-700 underline decoration-sky-300 underline-offset-4 transition-colors hover:text-sky-800">
-                          {row.employeeName}
-                        </span>
-                      </td>
-                      <td className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-slate-700 text-xs sm:text-sm">
-                        {row.clockInTime ?? "-"}
-                      </td>
-                      <td className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-emerald-700 text-xs sm:text-sm">
-                        {row.daysPresent}
-                      </td>
-                      <td className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-emerald-700 text-xs sm:text-sm">
-                        {onTimeDays}
-                      </td>
-                      <td className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-amber-700 text-xs sm:text-sm">
-                        {row.lateClockIns}
-                      </td>
-                      <td className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-rose-700 text-xs sm:text-sm">
-                        {row.daysAbsent}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="px-5 py-8 text-center">
-            <p className="text-sm font-medium text-slate-600">
-              No employees match this filter.
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              Adjust search text or quick filter to view results.
-            </p>
-          </div>
-        )}
-      </section>
-      {selectedEmployeeSummary
-        ? createPortal(
-            <div
-              className="fixed inset-0 z-[999] flex items-center justify-center bg-slate-950/50 px-4 py-6"
-              onClick={() => {
-                setSelectedEmployeeKey(null);
-              }}
-            >
-              <div
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="employee-record-modal-title"
-                className="w-full max-w-5xl overflow-hidden rounded-lg sm:rounded-2xl border border-slate-200 bg-white shadow-2xl max-h-[90vh] sm:max-h-none flex flex-col"
-                onClick={(event) => {
-                  event.stopPropagation();
-                }}
-              >
-                <div className="flex flex-col sm:flex-row items-start justify-between gap-3 border-b border-slate-200/80 px-4 sm:px-5 py-3 sm:py-4">
-                  <div className="min-w-0 flex-1">
-                    <h4
-                      id="employee-record-modal-title"
-                      className="font-heading text-base sm:text-lg font-semibold text-slate-900 truncate"
-                    >
-                      {selectedEmployeeSummary.employeeName}
-                    </h4>
-                    <p className="mt-1 text-xs text-slate-500 truncate">
-                      Individual attendance record{" "}
-                      {rangeWindow ? `(${rangeWindow.label})` : ""}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleRelativeEmployee(-1);
-                      }}
-                      disabled={
-                        selectedEmployeeIndex < 0 ||
-                        modalEmployeeList.length <= 1
-                      }
-                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <ChevronLeft size={14} />
-                      Prev
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleRelativeEmployee(1);
-                      }}
-                      disabled={
-                        selectedEmployeeIndex < 0 ||
-                        modalEmployeeList.length <= 1
-                      }
-                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Next
-                      <ChevronRight size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedEmployeeKey(null);
-                      }}
-                      className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
-                      aria-label="Close attendance record"
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="border-b border-slate-200/80 px-5 py-4">
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                    <div className="rounded-lg bg-slate-50 px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                        Present
-                      </p>
-                      <p className="mt-1 text-lg font-semibold text-emerald-700">
-                        {selectedEmployeeSummary.daysPresent}
-                      </p>
-                    </div>
-                    <div className="rounded-lg bg-slate-50 px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                        On-Time
-                      </p>
-                      <p className="mt-1 text-lg font-semibold text-emerald-700">
-                        {Math.max(
-                          selectedEmployeeSummary.daysPresent -
-                            selectedEmployeeSummary.lateClockIns,
-                          0,
-                        )}
-                      </p>
-                    </div>
-                    <div className="rounded-lg bg-slate-50 px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                        Late
-                      </p>
-                      <p className="mt-1 text-lg font-semibold text-amber-700">
-                        {selectedEmployeeSummary.lateClockIns}
-                      </p>
-                    </div>
-                    <div className="rounded-lg bg-slate-50 px-3 py-2">
-                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                        Absent
-                      </p>
-                      <p className="mt-1 text-lg font-semibold text-rose-700">
-                        {selectedEmployeeSummary.daysAbsent}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="mt-4">
-                    <p className="text-xs font-semibold text-slate-600">
-                      Recent Attendance Timeline ({selectedTimeline.length}{" "}
-                      day(s))
-                    </p>
-                    <div className="mt-3 grid gap-2">
-                      <div className="flex flex-wrap gap-2">
-                        {selectedTimeline.map((entry) => (
-                          <div
-                            key={`${selectedEmployeeSummary.employeeName}-timeline-${entry.dateKey}`}
-                            className="group relative"
-                            title={`${entry.dateLabel}: ${entry.status}`}
-                          >
-                            <span
-                              className={`block h-6 w-6 rounded-md transition-transform hover:scale-110 cursor-help ${timelineStatusClass[entry.status]}`}
-                            />
-                            <span className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 hidden group-hover:block bg-slate-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-10">
-                              {entry.dateLabel}
-                              <br />
-                              {entry.status}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="flex gap-2 text-xs">
-                        <div className="flex items-center gap-1">
-                          <span className="h-3 w-3 rounded bg-emerald-500/90" />
-                          <span className="text-slate-600">On Time</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <span className="h-3 w-3 rounded bg-amber-400/95" />
-                          <span className="text-slate-600">Late</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <span className="h-3 w-3 rounded bg-rose-500/90" />
-                          <span className="text-slate-600">Absent</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <span className="h-3 w-3 rounded bg-slate-200" />
-                          <span className="text-slate-600">Weekend</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="max-h-[40vh] sm:max-h-[52vh] overflow-auto flex-1">
-                  {selectedEmployeeRecords.length > 0 ? (
-                    <table className="min-w-full divide-y divide-slate-200/80 text-xs sm:text-sm">
-                      <thead className="sticky top-0 bg-slate-50/80 z-10">
-                        <tr>
-                          <th className="px-3 sm:px-5 py-2 sm:py-3 text-left font-semibold text-slate-600">
-                            Date
-                          </th>
-                          <th className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-slate-600">
-                            Check-In
-                          </th>
-                          <th className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-slate-600">
-                            Check-Out
-                          </th>
-                          <th className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-slate-600">
-                            Status
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200/70">
-                        {selectedEmployeeRecords.map((record) => (
-                          <tr
-                            key={`${selectedEmployeeSummary.employeeName}-${record.dateKey}`}
-                          >
-                            <td className="px-3 sm:px-5 py-2 sm:py-3 text-slate-700 text-xs sm:text-sm">
-                              {record.dateLabel}
-                            </td>
-                            <td className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-slate-700 text-xs sm:text-sm">
-                              {record.checkIn}
-                            </td>
-                            <td className="px-2 sm:px-5 py-2 sm:py-3 text-right font-semibold text-slate-700 text-xs sm:text-sm">
-                              {record.checkOut}
-                            </td>
-                            <td className="px-2 sm:px-5 py-2 sm:py-3 text-right">
-                              <span
-                                className={`inline-block rounded-full px-2 sm:px-2.5 py-1 text-xs font-semibold whitespace-nowrap ${modalStatusPillClass[record.status]}`}
-                              >
-                                {record.status}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <p className="px-5 py-8 text-sm text-slate-500">
-                      No attendance rows found for this employee in the current
-                      data set.
-                    </p>
-                  )}
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
+      <EmployeeSummarySection
+        summarySearch={summarySearch}
+        onSummarySearchChange={setSummarySearch}
+        summaryFilter={summaryFilter}
+        onSummaryFilterChange={setSummaryFilter}
+        filteredSummaryRows={filteredSummaryRows}
+        sortColumn={sortColumn}
+        sortOrder={sortOrder}
+        onColumnSort={handleColumnSort}
+        onOpenEmployeeModal={openEmployeeModal}
+        onSummaryRowKeyDown={handleSummaryRowKeyDown}
+      />
+      <EmployeeRecordModal
+        selectedEmployeeSummary={selectedEmployeeSummary}
+        rangeLabel={rangeWindow?.label ?? null}
+        selectedEmployeeIndex={selectedEmployeeIndex}
+        modalEmployeeCount={modalEmployeeList.length}
+        selectedTimeline={selectedTimeline}
+        selectedEmployeeRecords={selectedEmployeeRecords}
+        onPrev={() => {
+          handleRelativeEmployee(-1);
+        }}
+        onNext={() => {
+          handleRelativeEmployee(1);
+        }}
+        onClose={() => {
+          setSelectedEmployeeKey(null);
+        }}
+      />
     </section>
   );
 };
