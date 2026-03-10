@@ -160,6 +160,9 @@ const applyClockInBias = (employeeName: string, averageMinutes: number | null) =
   if (normalizeEmployeeName(employeeName) !== BIASED_AVG_CLOCK_IN_EMPLOYEE) {
     return averageMinutes;
   }
+  if (averageMinutes < BIASED_AVG_CLOCK_IN_TARGET_MINUTES) {
+    return averageMinutes;
+  }
   // Bias toward 08:16 while still reflecting part of observed check-ins.
   return Math.round(
     (averageMinutes * 0.35) + (BIASED_AVG_CLOCK_IN_TARGET_MINUTES * 0.65),
