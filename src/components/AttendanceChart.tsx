@@ -183,16 +183,6 @@ const deltaLabel = (value: number) => {
   return `${value}`;
 };
 
-const deltaTone = (value: number) => {
-  if (value > 0) {
-    return "bg-amber-100 text-amber-700";
-  }
-  if (value < 0) {
-    return "bg-emerald-100 text-emerald-700";
-  }
-  return "bg-slate-100 text-slate-600";
-};
-
 interface LeaderboardPanelProps {
   title: string;
   data: LeaderboardPoint[];
@@ -220,11 +210,7 @@ const LeaderboardPanel = ({
           <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600">
             Delta vs previous period
           </span>
-        ) : (
-          <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-500">
-            No baseline period
-          </span>
-        )}
+        ) : null}
       </div>
 
       {data.length > 0 ? (
@@ -261,25 +247,6 @@ const LeaderboardPanel = ({
             </ResponsiveContainer>
           </div>
 
-          <ol className="mt-3 space-y-1.5 text-xs text-slate-600">
-            {data.slice(0, 5).map((row, index) => (
-              <li
-                key={`${title}-${row.employeeName}`}
-                className="grid grid-cols-[28px_1fr_auto_auto] items-center gap-2 rounded-lg bg-slate-50/80 px-2 py-1.5"
-              >
-                <span className="font-semibold text-slate-500">#{index + 1}</span>
-                <span className="truncate font-medium text-slate-700">{row.employeeName}</span>
-                <span className="font-semibold text-slate-800">{row.value}</span>
-                {hasPreviousWindow ? (
-                  <span className={`rounded px-1.5 py-0.5 font-semibold ${deltaTone(row.delta)}`}>
-                    {deltaLabel(row.delta)}
-                  </span>
-                ) : (
-                  <span className="rounded px-1.5 py-0.5 font-semibold text-slate-500">-</span>
-                )}
-              </li>
-            ))}
-          </ol>
         </>
       ) : (
         <p className="mt-4 rounded-xl bg-slate-50 p-4 text-sm text-slate-500">{emptyText}</p>
